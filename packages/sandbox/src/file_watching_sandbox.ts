@@ -7,7 +7,9 @@ import {
   SandboxDeleteOptions,
   SandboxEvents,
   SandboxOptions,
+  SandboxStatus,
 } from './sandbox.js';
+import { SandboxStateManager } from './sandbox_state_manager.js';
 import parseGitIgnore from 'parse-gitignore';
 import path from 'path';
 import fs from 'fs';
@@ -21,6 +23,11 @@ import {
   SSMClient,
   SSMServiceException,
 } from '@aws-sdk/client-ssm';
+import {
+  CloudFormationClient,
+  CloudFormationServiceException,
+  DescribeStacksCommand
+} from '@aws-sdk/client-cloudformation';
 import {
   AmplifyPrompter,
   LogLevel,
@@ -75,6 +82,7 @@ export class FileWatchingSandbox extends EventEmitter implements Sandbox {
   private watcherSubscription: Awaited<ReturnType<typeof _subscribe>>;
   private outputFilesExcludedFromWatch = ['.amplify'];
   private filesChangesTracker: FilesChangesTracker;
+  private stateManager: SandboxStateManager;
 
   /**
    * Creates a watcher process for this instance
@@ -91,6 +99,7 @@ export class FileWatchingSandbox extends EventEmitter implements Sandbox {
     process.once('SIGINT', () => void this.stop());
     process.once('SIGTERM', () => void this.stop());
     super();
+    this.stateManager = new SandboxStateManager(printer);
     this.interceptStderr();
   }
 
@@ -118,7 +127,11 @@ export class FileWatchingSandbox extends EventEmitter implements Sandbox {
     const watchDir = options.dir ?? './amplify';
     const watchForChanges = options.watchForChanges ?? true;
 
+    // Update state to indicate we're starting the sandbox
+    this.stateManager.updateStatus(SandboxStatus.RUNNING);
+
     if (!fs.existsSync(watchDir)) {
+      this.stateManager.updateStatus(SandboxStatus.NONEXISTENT);
       throw new AmplifyUserError('PathNotFoundError', {
         message: `${watchDir} does not exist.`,
         resolution:
@@ -263,6 +276,8 @@ export class FileWatchingSandbox extends EventEmitter implements Sandbox {
     this.functionsLogStreamer?.stopStreamingLogs();
     // can be undefined if command exits before subscription
     await this.watcherSubscription?.unsubscribe();
+    // Update state to indicate we're stopping the sandbox
+    this.stateManager.updateStatus(SandboxStatus.STOPPED);
   };
 
   /**
@@ -275,8 +290,90 @@ export class FileWatchingSandbox extends EventEmitter implements Sandbox {
     await this.executor.destroy(
       await this.backendIdSandboxResolver(options.identifier),
     );
+    // Update state to indicate we're deleting the sandbox
+    this.stateManager.updateStatus(SandboxStatus.NONEXISTENT);
     this.emit('successfulDeletion');
     this.printer.log('[Sandbox] Finished deleting.');
+  };
+
+  /**
+   * @inheritdoc
+   */
+  getStateManager = (): SandboxStateManager => {
+    return this.stateManager;
+  };
+
+  /**
+   * @inheritdoc
+   */
+  getStatus = async (): Promise<SandboxStatus> => {
+    // Get the current status from the state manager
+    const currentStatus = this.stateManager.getStatus();
+    this.printer.log(`Current status from state manager: ${currentStatus}`, LogLevel.DEBUG);
+    
+    // If we have a definitive status, return it immediately
+    if (currentStatus !== SandboxStatus.NONEXISTENT) {
+      this.printer.log(`Returning definitive status: ${currentStatus}`, LogLevel.DEBUG);
+      return currentStatus;
+    }
+    
+    // If the state manager says NONEXISTENT, double-check with CloudFormation
+    // This helps ensure we're not missing a stack that exists but the state manager doesn't know about
+    this.printer.log('State manager reports NONEXISTENT, checking CloudFormation stack', LogLevel.DEBUG);
+    
+    try {
+      this.printer.log('Resolving backend ID...', LogLevel.DEBUG);
+      const backendId = await this.backendIdSandboxResolver();
+      
+      
+      // Create CloudFormation client with error handling
+      let cfnClient: CloudFormationClient;
+      try {
+        cfnClient = new CloudFormationClient();
+      } catch (cfnError) {
+        this.printer.log(`Error creating CloudFormation client: ${String(cfnError)}`, LogLevel.ERROR);
+        // Return current status if we can't create the CloudFormation client
+        return currentStatus;
+      }
+      
+      const stackName = BackendIdentifierConversions.toStackName(backendId);
+      
+      try {
+        // Try to describe the stack to see if it exists
+        const { Stacks: stacks } = await cfnClient.send(
+          new DescribeStacksCommand({ StackName: stackName })
+        );
+        
+        // If we get here, the stack exists
+        if (!stacks || stacks.length === 0) {
+          return SandboxStatus.NONEXISTENT;
+        }
+        
+        // If the stack exists but we have no watcher subscription, it's stopped
+        if (!this.watcherSubscription) {
+          this.stateManager.updateStatus(SandboxStatus.STOPPED);
+          return SandboxStatus.STOPPED;
+        }
+        
+        // If we have a watcher subscription, it's running
+        this.stateManager.updateStatus(SandboxStatus.RUNNING);
+        return SandboxStatus.RUNNING;
+      } catch (error) {
+        // If we get a ValidationError, the stack doesn't exist
+        if (error instanceof Error && 
+            (error.name === 'ValidationError' || 
+             (error instanceof CloudFormationServiceException && error.name === 'ValidationError'))) {
+          return SandboxStatus.NONEXISTENT;
+        }
+        
+        // For any other error, log it and return the current status
+        this.printer.log(`Error checking CloudFormation stack: ${String(error)}`, LogLevel.DEBUG);
+        return currentStatus;
+      }
+    } catch (error) {
+      this.printer.log(`Error resolving backend ID: ${String(error)}`, LogLevel.DEBUG);
+      return currentStatus;
+    }
   };
 
   private shouldValidateAppSources = (): boolean => {
@@ -296,6 +393,9 @@ export class FileWatchingSandbox extends EventEmitter implements Sandbox {
     await tracer.startActiveSpan('sandbox', async (span: Span) => {
       const startTime = Date.now();
       try {
+        // Emit a deployment start event
+        this.printer.log('[Sandbox] Starting deployment...', LogLevel.INFO);
+        
         const deployResult = await this.executor.deploy(
           await this.backendIdSandboxResolver(options.identifier),
           // It's important to pass this as callback so that debounce does
@@ -321,7 +421,9 @@ export class FileWatchingSandbox extends EventEmitter implements Sandbox {
         };
         setSpanAttributes(span, data);
         span.end();
-        this.printer.log('[Sandbox] Deployment successful', LogLevel.DEBUG);
+        this.printer.log('[Sandbox] Deployment successful', LogLevel.INFO);
+        // Update the state manager to indicate the sandbox is running
+        this.stateManager.updateStatus(SandboxStatus.RUNNING);
         this.emit('successfulDeployment', deployResult);
       } catch (error) {
         const amplifyError = AmplifyError.isAmplifyError(error)
