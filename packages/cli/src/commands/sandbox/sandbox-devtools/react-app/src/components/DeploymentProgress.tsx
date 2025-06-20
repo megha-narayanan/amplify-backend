@@ -12,6 +12,8 @@ import {
 interface DeploymentProgressProps {
   socket: Socket | null;
   visible: boolean;
+  status?: 'running' | 'stopped' | 'nonexistent' | 'unknown' | 'deploying';
+  deploymentCompleted?: boolean;
 }
 
 interface ResourceStatus {
@@ -29,8 +31,13 @@ interface DeploymentEvent {
   isGeneric?: boolean;
 }
 
-const DeploymentProgress: React.FC<DeploymentProgressProps> = ({ socket, visible }) => {
-  const [isDeploying, setIsDeploying] = useState<boolean>(false);
+const DeploymentProgress: React.FC<DeploymentProgressProps> = ({ 
+  socket, 
+  visible, 
+  status
+}) => {
+  // Determine if deployment is in progress based on status prop
+  const isDeploying = status === 'deploying';
   const [events, setEvents] = useState<DeploymentEvent[]>([]);
   const [resourceStatuses, setResourceStatuses] = useState<Record<string, ResourceStatus>>({});
   const containerRef = useRef<HTMLDivElement>(null);
@@ -70,8 +77,6 @@ const DeploymentProgress: React.FC<DeploymentProgressProps> = ({ socket, visible
     if (!socket) return;
     
     const handleDeploymentInProgress = (data: { message: string; timestamp: string }) => {
-      setIsDeploying(true);
-      
       // Try to parse the message as a CloudFormation event
       const resourceStatus = parseDeploymentMessage(data.message);
       
@@ -105,7 +110,6 @@ const DeploymentProgress: React.FC<DeploymentProgressProps> = ({ socket, visible
     };
     
     const handleDeploymentCompleted = (data: { message: string; timestamp: string; error?: boolean }) => {
-      setIsDeploying(false);
       
       // Add completion event
       setEvents(prev => [

@@ -93,6 +93,8 @@ const ConsoleViewer = ({ logs }: ConsoleViewerProps) => {
         return 'success';
       case 'info':
         return 'info';
+      case 'debug':
+        return 'pending'; 
       default:
         return 'info';
     }
@@ -114,7 +116,7 @@ const ConsoleViewer = ({ logs }: ConsoleViewerProps) => {
           {item.level}
         </StatusIndicator>
       ),
-      width: 100
+      width: 150
     },
     {
       id: 'message',

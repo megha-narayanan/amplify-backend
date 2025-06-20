@@ -30,7 +30,6 @@ export interface SandboxOptions {
   streamFunctionLogs?: boolean;
   logsFilter?: string[];
   logsOutFile?: string;
-  debugMode?: boolean;
 }
 
 const SandboxOptionsModal: React.FC<SandboxOptionsModalProps> = ({ visible, onDismiss, onConfirm }) => {
@@ -45,7 +44,6 @@ const SandboxOptionsModal: React.FC<SandboxOptionsModalProps> = ({ visible, onDi
   const [streamFunctionLogs, setStreamFunctionLogs] = useState<boolean>(false);
   const [logsFilterInput, setLogsFilterInput] = useState<string>('');
   const [logsOutFile, setLogsOutFile] = useState<string>('');
-  const [debugMode, setDebugMode] = useState<boolean>(false);
 
   const handleConfirm = () => {
     const options: SandboxOptions = {};
@@ -94,9 +92,6 @@ const SandboxOptionsModal: React.FC<SandboxOptionsModalProps> = ({ visible, onDi
       }
     }
     
-    if (debugMode) {
-      options.debugMode = true;
-    }
     
     onConfirm(options);
   };
@@ -198,21 +193,13 @@ const SandboxOptionsModal: React.FC<SandboxOptionsModalProps> = ({ visible, onDi
         </FormField>
         
         <FormField label="Function Logs">
-          <SpaceBetween direction="vertical" size="xs">
-            <Checkbox
-              checked={streamFunctionLogs}
-              onChange={({ detail }) => setStreamFunctionLogs(detail.checked)}
-              disabled={once}
-            >
-              Stream function execution logs
-            </Checkbox>
-            <Checkbox
-              checked={debugMode}
-              onChange={({ detail }) => setDebugMode(detail.checked)}
-            >
-              Enable debug mode (verbose logging)
-            </Checkbox>
-          </SpaceBetween>
+          <Checkbox
+            checked={streamFunctionLogs}
+            onChange={({ detail }) => setStreamFunctionLogs(detail.checked)}
+            disabled={once}
+          >
+            Stream function execution logs
+          </Checkbox>
         </FormField>
         
         {streamFunctionLogs && (

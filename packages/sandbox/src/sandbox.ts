@@ -3,16 +3,6 @@
 import EventEmitter from 'events';
 import { ClientConfigFormat } from '@aws-amplify/client-config';
 import { BackendIdentifier } from '@aws-amplify/plugin-types';
-import { SandboxStateManager } from './sandbox_state_manager.js';
-
-/**
- * Enum for sandbox status
- */
-export enum SandboxStatus {
-  RUNNING = 'running',
-  STOPPED = 'stopped',
-  NONEXISTENT = 'nonexistent'
-}
 
 /**
  * Interface for Sandbox.
@@ -33,18 +23,12 @@ export type Sandbox = {
    * Deletes this environment
    */
   delete: (options: SandboxDeleteOptions) => Promise<void>;
-
-  /**
-   * Gets the current status of the sandbox
-   * @returns The current status of the sandbox (running, stopped, or nonexistent)
-   */
-  getStatus: () => Promise<SandboxStatus>;
   
   /**
-   * Gets the state manager for this sandbox
-   * @returns The state manager for this sandbox
+   * Gets the current state of the sandbox
+   * @returns The current state: 'running', 'stopped', 'deploying', or 'nonexistent'
    */
-  getStateManager: () => SandboxStateManager;
+  getState: () => 'running' | 'stopped' | 'deploying' | 'nonexistent';
 } & EventEmitter;
 
 export type SandboxEvents =

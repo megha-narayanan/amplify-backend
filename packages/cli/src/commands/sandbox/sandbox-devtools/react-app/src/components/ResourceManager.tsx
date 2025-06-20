@@ -29,6 +29,7 @@ export interface BackendMetadata {
 interface ResourceManagerProps {
   socket: Socket | null;
   onResourcesLoaded: (resources: BackendMetadata | null) => void;
+  sandboxStatus?: 'running' | 'stopped' | 'nonexistent' | 'unknown' | 'deploying';
 }
 
 // Custom hook for managing resources
@@ -98,11 +99,19 @@ export const useResourceManager = (
       setLoading(false);
     });
 
-    // Listen for deployment completion to refresh resources
-    socket.on('deploymentCompleted', () => {
-      console.log('ResourceManager: Deployment completed, refreshing resources');
-      if (sandboxStatus !== 'stopped') {
-        refreshResources();
+    // Listen for sandbox status changes
+    socket.on('sandboxStatus', (data: { 
+      status: 'running' | 'stopped' | 'nonexistent' | 'unknown' | 'deploying',
+      deploymentCompleted?: boolean
+    }) => {
+      console.log(`ResourceManager: Sandbox status changed to ${data.status}`);
+      
+      // If deployment completed or status is running, refresh resources
+      if (data.deploymentCompleted || data.status === 'running') {
+        console.log('ResourceManager: Status change requires resource refresh');
+        if (data.status !== 'stopped') {
+          refreshResources();
+        }
       }
     });
 
@@ -114,21 +123,10 @@ export const useResourceManager = (
       }
     });
 
-    // Listen for sandbox status changes
-    socket.on('sandboxStatus', (data: { status: 'running' | 'stopped' | 'nonexistent' | 'unknown' | 'deploying' }) => {
-      console.log(`ResourceManager: Sandbox status changed to ${data.status}`);
-      // If the sandbox was stopped and is now running, refresh resources
-      if (data.status === 'running') {
-        console.log('ResourceManager: Sandbox is now running, refreshing resources');
-        refreshResources();
-      }
-    });
-
     // Clean up listeners when component unmounts
     return () => {
       socket.off('connect', handleConnect);
       socket.off('deployedBackendResources');
-      socket.off('deploymentCompleted');
       socket.off('resourceConfigChanged');
       socket.off('sandboxStatus');
       socket.off('error');
@@ -210,8 +208,8 @@ export const useResourceManager = (
 };
 
 // The actual ResourceManager component that uses the hook
-const ResourceManager: React.FC<ResourceManagerProps> = ({ socket, onResourcesLoaded }) => {
-  useResourceManager(socket, onResourcesLoaded);
+const ResourceManager: React.FC<ResourceManagerProps> = ({ socket, onResourcesLoaded, sandboxStatus }) => {
+  useResourceManager(socket, onResourcesLoaded, sandboxStatus);
   
   // NOTE: actual UI will be handled by the ResourceConsole component
   return (

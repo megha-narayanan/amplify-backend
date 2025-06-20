@@ -15,7 +15,9 @@ import { DeployedBackendClientFactory } from '@aws-amplify/deployed-backend-clie
 import { S3Client } from '@aws-sdk/client-s3';
 import { AmplifyClient } from '@aws-sdk/client-amplify';
 import { CloudFormationClient } from '@aws-sdk/client-cloudformation';
+import { CloudWatchLogsClient, GetLogEventsCommand, DescribeLogStreamsCommand } from '@aws-sdk/client-cloudwatch-logs';
 import { EOL } from 'os';
+import { LocalStorageManager } from './local_storage_manager.js';
 
 // Interface for resource with friendly name
 export type ResourceWithFriendlyName = {
@@ -27,22 +29,65 @@ export type ResourceWithFriendlyName = {
 };
 
 /**
- * BAD Rudimentary friendly name function.
+ * Creates a friendly name for a resource, using CDK metadata when available.
  * @param logicalId The logical ID of the resource
+ * @param metadata Optional CDK metadata that may contain construct path
  * @returns A user-friendly name for the resource
  */
-export function createFriendlyName(logicalId: string): string {
-  // Remove common prefixes
+export function createFriendlyName(
+  logicalId: string,
+  metadata?: { constructPath?: string }
+): string {
+  // If we have CDK metadata with a construct path, use it
+  if (metadata?.constructPath) {
+    return normalizeCDKConstructPath(metadata.constructPath);
+  }
+  
+  // For CloudFormation stacks, try to extract a friendly name
+  if (logicalId.includes('NestedStack') || logicalId.endsWith('StackResource')) {
+    const nestedStackName = getFriendlyNameFromNestedStackName(logicalId);
+    if (nestedStackName) {
+      return nestedStackName;
+    }
+  }
+  
+  // Fall back to the basic transformation
   let name = logicalId.replace(/^amplify/, '').replace(/^Amplify/, '');
-
-  // Add spaces before capital letters
   name = name.replace(/([A-Z])/g, ' $1').trim();
-
-  // Remove numeric suffixes
   name = name.replace(/[0-9A-F]{8}$/, '');
-
-  // If it's empty after processing, fall back to the original
+  
   return name || logicalId;
+}
+
+/**
+ * Normalizes a CDK construct path to create a more readable friendly name
+ */
+function normalizeCDKConstructPath(constructPath: string): string {
+  // Don't process very long paths to avoid performance issues
+  if (constructPath.length > 1000) return constructPath;
+  
+  // Handle nested stack paths
+  const nestedStackRegex = /(?<nestedStack>[a-zA-Z0-9_]+)\.NestedStack\/\1\.NestedStackResource$/;
+  
+  return constructPath
+    .replace(nestedStackRegex, '$<nestedStack>')
+    .replace('/amplifyAuth/', '/')
+    .replace('/amplifyData/', '/');
+}
+
+/**
+ * Extracts a friendly name from a nested stack logical ID -- not sure if this works?
+ */
+function getFriendlyNameFromNestedStackName(stackName: string): string | undefined {
+  const parts = stackName.split('-');
+  
+  if (parts && parts.length === 7 && parts[3] === 'sandbox') {
+    return parts[5].slice(0, -8) + ' stack';
+  } else if (parts && parts.length === 5 && parts[3] === 'sandbox') {
+    return 'root stack';
+  }
+  
+  return undefined;
 }
 
 /**
@@ -126,6 +171,51 @@ function isDeploymentProgressMessage(message: string): boolean {
 }
 
 /**
+ * Check if a message is a CDK deployment log that should be filtered from console
+ * @param message The message to check
+ * @returns True if the message should be filtered
+ */
+function shouldFilterFromConsole(message: string): boolean {
+  const cleanedMessage = cleanAnsiCodes(message);
+  
+  // Filter CDK toolkit messages about stack status
+  if (cleanedMessage.includes('[deploy: CDK_TOOLKIT_')) {
+    return true;
+  }
+  
+  // Filter AWS SDK calls
+  if (cleanedMessage.includes('AWS SDK Call')) {
+    return true;
+  }
+  
+  // Filter stack progress messages
+  if (cleanedMessage.includes('has an ongoing operation in progress and is not stable')) {
+    return true;
+  }
+  
+  // Filter detailed deployment progress messages with JSON
+  if (cleanedMessage.includes('"deployment":') && 
+      cleanedMessage.includes('"event":') && 
+      cleanedMessage.includes('"progress":')) {
+    return true;
+  }
+  
+  // Filter stack completion messages
+  if (cleanedMessage.includes('Stack ARN:') || 
+      cleanedMessage.includes('has completed updating')) {
+    return true;
+  }
+  
+  // Filter deployment time messages
+  if (cleanedMessage.includes('Deployment time:') || 
+      cleanedMessage.includes('Total time:')) {
+    return true;
+  }
+  
+  return false;
+}
+
+/**
  * Extract CloudFormation events from a message
  * @param message The message to extract events from
  * @returns An array of CloudFormation events
@@ -136,7 +226,6 @@ function extractCloudFormationEvents(message: string): string[] {
   
   for (const line of lines) {
     // Match CloudFormation resource status patterns
-    // Example: "5:25:22 PM | CREATE_IN_PROGRESS | CloudFormation:Stack | root stack"
     if (/\s+[AP]M\s+\|\s+[A-Z_]+\s+\|\s+.+\s+\|\s+.+/.test(line)) {
       events.push(line);
     }
@@ -203,6 +292,9 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
     );
 
     const backendId = await sandboxBackendIdResolver.resolve();
+    
+    // Create a storage manager for this sandbox
+    const storageManager = new LocalStorageManager(backendId.name);
 
     const backendClient = new DeployedBackendClientFactory().getInstance({
       getS3Client: () => new S3Client(),
@@ -210,16 +302,27 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
       getCloudFormationClient: () => new CloudFormationClient(),
     });
 
-    // Function to get the current sandbox status
-    const getStatus = async () => {
+    // Function to determine the sandbox state and update related flags
+    const getSandboxState = () => {
       try {
-        printer.log('Checking sandbox status', LogLevel.DEBUG);
-        printer.log('About to call sandbox.getStatus()', LogLevel.DEBUG);
-        const status = await sandbox.getStatus();
-        printer.log(`Current sandbox status: ${status}`, LogLevel.DEBUG);
-        return status;
+        console.log('[DEBUG] Checking sandbox state');
+        // Use the sandbox's getState method to get the actual state
+        const state = sandbox.getState();
+        console.log(`[DEBUG] Sandbox state from getState(): ${state}`);
+        
+        // Update sandboxState to match actual state
+        sandboxState = state;
+        
+        // If the sandbox is not in 'deploying' state, set deploymentInProgress to false
+        if (state !== 'deploying') {
+          console.log(`[DEBUG] Sandbox is ${state}, setting deploymentInProgress to false`);
+          deploymentInProgress = false;
+        }
+        
+        return state;
       } catch (error) {
-        printer.log(`Error getting sandbox status: ${error}`, LogLevel.ERROR);
+        console.log(`[DEBUG] Error checking sandbox status: ${error}`);
+        printer.log(`Error checking sandbox status: ${error}`, LogLevel.ERROR);
         return 'unknown';
       }
     };
@@ -245,6 +348,9 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
     // Track deployment in progress state
     let deploymentInProgress = false;
     
+    // Track sandbox state - can be 'running', 'stopped', 'nonexistent', 'deploying', or 'unknown'
+    let sandboxState = 'stopped';
+    
     // Store recent deployment messages to avoid duplicates
     const recentDeploymentMessages = new Set<string>();
     
@@ -253,58 +359,164 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
       // Clean the message
       const cleanMessage = cleanAnsiCodes(message);
       
-      // Check if we've already sent this exact message recently
-      if (recentDeploymentMessages.has(cleanMessage)) {
-        return;
-      }
+      // Extract CloudFormation events if present
+      const cfnEvents = extractCloudFormationEvents(cleanMessage);
       
-      // Add to recent messages and limit size
-      recentDeploymentMessages.add(cleanMessage);
-      if (recentDeploymentMessages.size > 100) {
-        // Remove oldest message (first item in set)
-        const firstValue = recentDeploymentMessages.values().next().value;
-        if (firstValue !== undefined) {
-          recentDeploymentMessages.delete(firstValue);
+      if (cfnEvents.length > 0) {
+        // Process each CloudFormation event
+        cfnEvents.forEach(event => {
+          // Create a unique key for this event to avoid duplicates
+          const eventKey = event.trim();
+          
+          // Check if we've already sent this exact event recently
+          if (recentDeploymentMessages.has(eventKey)) {
+            return;
+          }
+          
+          // Add to recent messages and limit size
+          recentDeploymentMessages.add(eventKey);
+          if (recentDeploymentMessages.size > 100) {
+            // Remove oldest message (first item in set)
+            const firstValue = recentDeploymentMessages.values().next().value;
+            if (firstValue !== undefined) {
+              recentDeploymentMessages.delete(firstValue);
+            }
+          }
+          
+          // Set deployment in progress flag
+          deploymentInProgress = true;
+          
+          // Create event object
+          const eventObj = {
+            message: event,
+            timestamp: new Date().toISOString()
+          };
+          
+          // Store the event in the local storage
+          storageManager.appendDeploymentProgressEvent(eventObj);
+          
+          // Emit the deployment progress event with the actual CloudFormation event
+          io.emit('deploymentInProgress', eventObj);
+        });
+      } else if (cleanMessage.includes('_IN_PROGRESS') || 
+                cleanMessage.includes('CREATE_') || 
+                cleanMessage.includes('DELETE_') || 
+                cleanMessage.includes('UPDATE_') ||
+                cleanMessage.includes('COMPLETE') ||
+                cleanMessage.includes('FAILED')) {
+        // This is a deployment status message but not in the standard format
+        
+        // Create a unique key for this message
+        const messageKey = cleanMessage.trim();
+        
+        // Check if we've already sent this exact message recently
+        if (recentDeploymentMessages.has(messageKey)) {
+          return;
         }
+        
+        // Add to recent messages and limit size
+        recentDeploymentMessages.add(messageKey);
+        if (recentDeploymentMessages.size > 100) {
+          // Remove oldest message (first item in set)
+          const firstValue = recentDeploymentMessages.values().next().value;
+          if (firstValue !== undefined) {
+            recentDeploymentMessages.delete(firstValue);
+          }
+        }
+        
+        // Set deployment in progress flag
+        deploymentInProgress = true;
+        
+        // Create event object
+        const eventObj = {
+          message: cleanMessage,
+          timestamp: new Date().toISOString()
+        };
+        
+        // Store the event in the local storage
+        storageManager.appendDeploymentProgressEvent(eventObj);
+        
+        // Emit the deployment progress event
+        io.emit('deploymentInProgress', eventObj);
       }
       
-      // Set deployment in progress flag
-      deploymentInProgress = true;
+      // Don't log the message again to avoid recursion
+    };
+    
+    // Flag to prevent recursive logging
+    let isHandlingLog = false;
+    
+    // Create a message deduplication cache with a TTL
+    const recentLogMessages = new Map<string, number>();
+    const MESSAGE_TTL = 1000; // 1 second TTL for duplicate messages
+    
+    // Function to check if a message is a duplicate
+    const isDuplicateMessage = (message: string, level: LogLevel): boolean => {
+      const key = `${level}:${message}`;
+      const now = Date.now();
       
-      // Emit the deployment progress event
-      io.emit('deploymentInProgress', {
-        message: cleanMessage,
-        timestamp: new Date().toISOString()
-      });
+      // Check if we've seen this message recently
+      const lastSeen = recentLogMessages.get(key);
+      if (lastSeen && now - lastSeen < MESSAGE_TTL) {
+        return true;
+      }
       
-      // Log the deployment progress message for debugging
-      printer.log(`Deployment progress: ${cleanMessage}`, LogLevel.DEBUG);
+      // Update the last seen time
+      recentLogMessages.set(key, now);
+      
+      // Clean up old entries
+      if (recentLogMessages.size > 100) {
+        const keysToDelete = [];
+        for (const [mapKey, timestamp] of recentLogMessages.entries()) {
+          if (now - timestamp > MESSAGE_TTL) {
+            keysToDelete.push(mapKey);
+          }
+        }
+        keysToDelete.forEach(key => recentLogMessages.delete(key));
+      }
+      
+      return false;
     };
     
     printer.log = function(message: string, level: LogLevel = LogLevel.INFO) {
-      // Skip DEBUG level messages if debug mode is not enabled
-      if (level === LogLevel.DEBUG && !debugModeEnabled) {
-        // Still call the original log method for server-side logging
-        originalLog.call(this, message, level);
+      // Always call the original log method for server-side logging
+      originalLog.call(this, message, level);
+      
+      // Skip DEBUG level messages from being sent to the client
+      if (level === LogLevel.DEBUG) {
         return;
       }
-      
-      // Call the original log method
-      originalLog.call(this, message, level);
       
       // Clean up ANSI color codes and other formatting from the message
       const cleanMessage = cleanAnsiCodes(message);
       
-      // Check if this is a deployment progress message
-      if (isDeploymentProgressMessage(cleanMessage)) {
-        handleDeploymentProgressMessage(cleanMessage);
+      // Remove timestamp prefix if present (to avoid duplicate timestamps)
+      let finalMessage = cleanMessage;
+      const timeRegex = /^\d{1,2}:\d{2}:\d{2}\s+[AP]M\s+/;
+      if (timeRegex.test(finalMessage)) {
+        finalMessage = finalMessage.replace(timeRegex, '');
       }
       
-      // Emit the log to the client
+      // Check if this is a deployment progress message and we're not already handling a log
+      if (!isHandlingLog && isDeploymentProgressMessage(cleanMessage)) {
+        isHandlingLog = true;
+        try {
+          handleDeploymentProgressMessage(cleanMessage);
+        } finally {
+          isHandlingLog = false;
+        }
+      }
+      
+      // Check for duplicate messages
+      if (isDuplicateMessage(finalMessage, level)) {
+        return;
+      }
+      
+      // Emit the log to the client (except DEBUG messages)
       io.emit('log', {
         timestamp: new Date().toISOString(),
-        level: LogLevel[level],
-        message: cleanMessage
+        level: LogLevel[level], // This correctly maps the enum to string
+        message: finalMessage
       });
     };
     
@@ -315,16 +527,34 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
       // Clean up ANSI color codes and other formatting from the message
       const cleanMessage = cleanAnsiCodes(message);
       
-      // Check if this is a deployment progress message
-      if (isDeploymentProgressMessage(cleanMessage)) {
-        handleDeploymentProgressMessage(cleanMessage);
+      // Skip error messages about deployment in progress
+      if (cleanMessage.includes('deployment is in progress') || 
+          cleanMessage.includes('Re-run this command once the deployment completes')) {
+        return;
+      }
+      
+      // Remove timestamp prefix if present (to avoid duplicate timestamps)
+      let finalMessage = cleanMessage;
+      const timeRegex = /^\d{1,2}:\d{2}:\d{2}\s+[AP]M\s+/;
+      if (timeRegex.test(finalMessage)) {
+        finalMessage = finalMessage.replace(timeRegex, '');
+      }
+      
+      // Check if this is a deployment progress message and we're not already handling a log
+      if (!isHandlingLog && isDeploymentProgressMessage(cleanMessage)) {
+        isHandlingLog = true;
+        try {
+          handleDeploymentProgressMessage(cleanMessage);
+        } finally {
+          isHandlingLog = false;
+        }
       }
       
       // Emit the log to the client
       io.emit('log', {
         timestamp: new Date().toISOString(),
-        level: 'INFO',
-        message: cleanMessage
+        level: 'INFO', // print always uses INFO level
+        message: finalMessage
       });
     };
 
@@ -338,14 +568,10 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
 
     const sandbox = await sandboxFactory.getInstance();
 
-    // Get initial sandbox status
-    let initialStatus;
-    try {
-      initialStatus = await sandbox.getStatus();
-    } catch (error) {
-      printer.log(`Error getting initial sandbox status: ${error}`, LogLevel.ERROR);
-      initialStatus = 'unknown';
-    }
+    // Get initial sandbox status and set sandboxState
+    const initialStatus = getSandboxState();
+    printer.log(`DEBUG: Initial sandbox status: ${initialStatus}`, LogLevel.DEBUG);
+    sandboxState = initialStatus; // This will update sandboxState to match the actual state
 
     // Listen for resource configuration changes
     sandbox.on('resourceConfigChanged', async (data) => {
@@ -356,39 +582,83 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
     // Listen for successful deployment
     sandbox.on('successfulDeployment', () => {
       printer.log('Successful deployment detected', LogLevel.DEBUG);
+      
+      // Get the current sandbox state
+      const currentState = getSandboxState();
+      printer.log(`DEBUG: After successful deployment, sandbox state is: ${currentState}`, LogLevel.DEBUG);
+      
       // Reset deployment in progress flag
       deploymentInProgress = false;
+      
       // Clear recent deployment messages
       recentDeploymentMessages.clear();
-      // Emit deployment completed event
-      io.emit('deploymentCompleted', {
-        timestamp: new Date().toISOString(),
-        message: 'Deployment completed successfully'
+      
+      // Use the actual sandbox state instead of forcing it to 'running'
+      // This ensures we respect the 'stopped' state after a --once deployment
+      sandboxState = currentState;
+      printer.log(`DEBUG: Using sandbox state '${sandboxState}' after successful deployment`, LogLevel.DEBUG);
+      
+      // Emit sandbox status update with the actual state and deployment completion info
+      const statusData = { 
+        status: sandboxState,
+        identifier: backendId.name,
+        deploymentCompleted: true,
+        message: 'Deployment completed successfully',
+        timestamp: new Date().toISOString()
+      };
+      
+      // Log the data being sent
+      printer.log(`DEBUG: About to emit sandboxStatus event with data: ${JSON.stringify(statusData)}`, LogLevel.DEBUG);
+      
+      // Emit to all connected clients
+      io.emit('sandboxStatus', statusData);
+      
+      // Also emit to each socket individually to ensure delivery
+      io.sockets.sockets.forEach((socket) => {
+        printer.log(`DEBUG: Emitting sandboxStatus directly to socket ${socket.id}`, LogLevel.DEBUG);
+        socket.emit('sandboxStatus', statusData);
       });
+      
+      printer.log(`DEBUG: Emitted sandboxStatus event with status '${sandboxState}' and deploymentCompleted flag`, LogLevel.INFO);
     });
 
     // Listen for failed deployment
     sandbox.on('failedDeployment', (error) => {
       printer.log('Failed deployment detected, checking current status', LogLevel.DEBUG);
+      
+      // Get the current sandbox state
+      const currentState = getSandboxState();
+      printer.log(`DEBUG: After failed deployment, sandbox state is: ${currentState}`, LogLevel.DEBUG);
+      
       // Reset deployment in progress flag
       deploymentInProgress = false;
+      
       // Clear recent deployment messages
       recentDeploymentMessages.clear();
-      // Emit deployment failed event
-      io.emit('deploymentCompleted', {
-        timestamp: new Date().toISOString(),
+      
+      // Emit sandbox status update with deployment failure information
+      const statusData = { 
+        status: currentState,
+        identifier: backendId.name,
+        deploymentCompleted: true,
+        error: true,
         message: `Deployment failed: ${error}`,
-        error: true
+        timestamp: new Date().toISOString()
+      };
+      
+      // Log the data being sent
+      printer.log(`DEBUG: About to emit sandboxStatus event with data: ${JSON.stringify(statusData)}`, LogLevel.DEBUG);
+      
+      // Emit to all connected clients
+      io.emit('sandboxStatus', statusData);
+      
+      // Also emit to each socket individually to ensure delivery
+      io.sockets.sockets.forEach((socket) => {
+        printer.log(`DEBUG: Emitting sandboxStatus directly to socket ${socket.id}`, LogLevel.DEBUG);
+        socket.emit('sandboxStatus', statusData);
       });
-    });
-    
-    // Listen for sandbox state changes
-    sandbox.getStateManager().addListener((status) => {
-      printer.log(`Sandbox state changed to: ${status}`, LogLevel.INFO);
-      io.emit('sandboxStatus', { 
-        status,
-        identifier: backendId.name
-      });
+      
+      printer.log(`DEBUG: Emitted sandboxStatus event with status '${currentState}' and deployment failure info`, LogLevel.INFO);
     });
     
     // Listen for CloudFormation deployment progress events from the AmplifyIOHost
@@ -411,29 +681,270 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
     // Handle socket connections
     io.on('connection', async (socket) => {
       // Send initial sandbox status on connection
-      printer.log('DEBUG: New socket connection, getting sandbox status', LogLevel.DEBUG);
+      printer.log('New socket connection, getting sandbox status', LogLevel.DEBUG);
       
-      // Handle explicit sandbox status requests
-      socket.on('getSandboxStatus', async () => {
-        printer.log('DEBUG: getSandboxStatus event received', LogLevel.DEBUG);
+      // Handle request for saved deployment progress
+      socket.on('getSavedDeploymentProgress', () => {
+        printer.log('DEBUG: getSavedDeploymentProgress event received', LogLevel.DEBUG);
+        const events = storageManager.loadDeploymentProgress();
+        socket.emit('savedDeploymentProgress', events);
+      });
+      
+      // Handle request for saved resources
+      socket.on('getSavedResources', () => {
+        printer.log('DEBUG: getSavedResources event received', LogLevel.DEBUG);
+        const resources = storageManager.loadResources();
+        if (resources) {
+          socket.emit('savedResources', resources);
+        } else {
+          socket.emit('error', {
+            message: 'No saved resources found'
+          });
+        }
+      });
+      
+      // Handle request for saved resource logs
+      socket.on('getSavedResourceLogs', (data: { resourceId: string }) => {
+        printer.log(`DEBUG: getSavedResourceLogs event received for ${data.resourceId}`, LogLevel.DEBUG);
+        const logs = storageManager.loadCloudWatchLogs(data.resourceId);
+        socket.emit('savedResourceLogs', {
+          resourceId: data.resourceId,
+          logs
+        });
+      });
+      
+      // Handle request for active log streams
+      socket.on('getActiveLogStreams', () => {
+        printer.log('DEBUG: getActiveLogStreams event received', LogLevel.DEBUG);
+        const resourceIds = storageManager.getResourcesWithCloudWatchLogs();
+        socket.emit('activeLogStreams', resourceIds);
+      });
+      
+      // Map to track active log polling intervals
+      const activeLogPollers = new Map<string, NodeJS.Timeout>();
+      
+      // Handle view resource logs request (without starting/stopping recording)
+      socket.on('viewResourceLogs', (data: { resourceId: string }) => {
+        printer.log(`DEBUG: viewResourceLogs event received for ${data.resourceId}`, LogLevel.INFO);
+        
         try {
-          const status = await getStatus();
-          printer.log(`DEBUG: Emitting sandbox status on request: ${status}`, LogLevel.DEBUG);
+          // Load saved logs for this resource
+          printer.log(`DEBUG: Loading CloudWatch logs for resource ${data.resourceId}`, LogLevel.INFO);
+          const logs = storageManager.loadCloudWatchLogs(data.resourceId);
+          printer.log(`DEBUG: Loaded ${logs ? logs.length : 0} CloudWatch logs for resource ${data.resourceId}`, LogLevel.INFO);
           
-          if (status === 'nonexistent') {
-            // For nonexistent sandbox, don't include identifier
-            socket.emit('sandboxStatus', { 
-              status: 'nonexistent'
+          // Send logs to client
+          printer.log(`DEBUG: Emitting savedResourceLogs event for resource ${data.resourceId}`, LogLevel.INFO);
+          socket.emit('savedResourceLogs', {
+            resourceId: data.resourceId,
+            logs: logs || [] // Ensure we always send an array, even if no logs exist
+          });
+          printer.log(`DEBUG: Emitted savedResourceLogs event for resource ${data.resourceId}`, LogLevel.INFO);
+          
+          // Create a dummy log entry if no logs exist, for testing purposes
+          if (!logs || logs.length === 0) {
+            printer.log(`DEBUG: No logs found for resource ${data.resourceId}, creating dummy log entry`, LogLevel.INFO);
+            const dummyLog = {
+              timestamp: new Date().toISOString(),
+              message: `This is a test log entry for resource ${data.resourceId}`
+            };
+            
+            // Save the dummy log
+            storageManager.appendCloudWatchLog(data.resourceId, dummyLog);
+            printer.log(`DEBUG: Dummy log entry created and saved for resource ${data.resourceId}`, LogLevel.INFO);
+            
+            // Send the dummy log to the client
+            socket.emit('resourceLogs', {
+              resourceId: data.resourceId,
+              logs: [dummyLog]
             });
-          } else {
-            // For other statuses, include the identifier
-            socket.emit('sandboxStatus', { 
-              status,
-              identifier: backendId.name 
-            });
+            printer.log(`DEBUG: Emitted resourceLogs event with dummy log for resource ${data.resourceId}`, LogLevel.INFO);
           }
         } catch (error) {
-          printer.log(`DEBUG: Error getting sandbox status on request: ${error}`, LogLevel.ERROR);
+          printer.log(`DEBUG: Error handling viewResourceLogs event for resource ${data.resourceId}: ${error}`, LogLevel.ERROR);
+          if (error instanceof Error) {
+            printer.log(`DEBUG: Error stack: ${error.stack}`, LogLevel.ERROR);
+          }
+          
+          // Notify client of error
+          socket.emit('logStreamError', {
+            resourceId: data.resourceId,
+            error: `Error loading logs: ${error}`
+          });
+        }
+      });
+      
+      
+      
+      // Handle toggle resource logging request
+      socket.on('toggleResourceLogging', async (data: { resourceId: string, resourceType: string, startLogging: boolean }) => {
+        printer.log(`DEBUG: toggleResourceLogging event received for ${data.resourceId}, startLogging=${data.startLogging}`, LogLevel.DEBUG);
+        
+        if (data.startLogging) {
+          // Start logging if not already active
+          if (!activeLogPollers.has(data.resourceId)) {
+            try {
+              // Create CloudWatch Logs client
+              const cwLogsClient = new CloudWatchLogsClient();
+              
+              // Check if resource type is defined
+              if (!data.resourceType) {
+                socket.emit('logStreamError', {
+                  resourceId: data.resourceId,
+                  error: 'Resource type is undefined. Cannot determine log group.'
+                });
+                return;
+              }
+              
+              // Determine log group name based on resource type
+              let logGroupName: string;
+              if (data.resourceType === 'AWS::Lambda::Function') {
+                logGroupName = `/aws/lambda/${data.resourceId}`;
+              } else if (data.resourceType === 'AWS::ApiGateway::RestApi') {
+                logGroupName = `API-Gateway-Execution-Logs_${data.resourceId}`;
+              } else if (data.resourceType === 'AWS::AppSync::GraphQLApi') {
+                logGroupName = `/aws/appsync/apis/${data.resourceId}`;
+              } else {
+                socket.emit('logStreamError', {
+                  resourceId: data.resourceId,
+                  error: `Unsupported resource type for logs: ${data.resourceType}`
+                });
+                return;
+              }
+              
+              // Notify client that we're starting to record logs
+              socket.emit('logStreamStatus', {
+                resourceId: data.resourceId,
+                status: 'starting'
+              });
+              
+              // Get the latest log stream
+              const describeStreamsResponse = await cwLogsClient.send(
+                new DescribeLogStreamsCommand({
+                  logGroupName,
+                  orderBy: 'LastEventTime',
+                  descending: true,
+                  limit: 1
+                })
+              );
+              
+              if (!describeStreamsResponse.logStreams || describeStreamsResponse.logStreams.length === 0) {
+                socket.emit('logStreamError', {
+                  resourceId: data.resourceId,
+                  error: 'No log streams found for this resource'
+                });
+                return;
+              }
+              
+              const logStreamName = describeStreamsResponse.logStreams[0].logStreamName;
+              let nextToken: string | undefined = undefined;
+              
+              // Function to fetch and save logs
+              const fetchLogs = async () => {
+                try {
+                  const getLogsResponse = await cwLogsClient.send(
+                    new GetLogEventsCommand({
+                      logGroupName,
+                      logStreamName,
+                      nextToken,
+                      startFromHead: true
+                    })
+                  );
+                  
+                  // Update next token for next poll
+                  nextToken = getLogsResponse.nextForwardToken;
+                  
+                  // Process and save logs
+                  if (getLogsResponse.events && getLogsResponse.events.length > 0) {
+                    const logs = getLogsResponse.events.map(event => ({
+                      timestamp: event.timestamp ? new Date(event.timestamp).toISOString() : new Date().toISOString(),
+                      message: event.message || ''
+                    }));
+                    
+                    // Save logs to local storage
+                    logs.forEach(log => {
+                      storageManager.appendCloudWatchLog(data.resourceId, log);
+                    });
+                    
+                    // Emit logs to all clients
+                    io.emit('resourceLogs', {
+                      resourceId: data.resourceId,
+                      logs
+                    });
+                  }
+                } catch (error) {
+                  printer.log(`Error fetching logs for ${data.resourceId}: ${error}`, LogLevel.ERROR);
+                  socket.emit('logStreamError', {
+                    resourceId: data.resourceId,
+                    error: `Error fetching logs: ${error}`
+                  });
+                }
+              };
+              
+              // Initial fetch
+              await fetchLogs();
+              
+              // Set up polling interval
+              const pollingInterval = setInterval(fetchLogs, 5000); // Poll every 5 seconds
+              
+              // Store polling interval
+              activeLogPollers.set(data.resourceId, pollingInterval);
+              
+              // Notify client that logs are now being recorded
+              socket.emit('logStreamStatus', {
+                resourceId: data.resourceId,
+                status: 'active'
+              });
+              
+            } catch (error) {
+              printer.log(`Error starting log stream for ${data.resourceId}: ${error}`, LogLevel.ERROR);
+              socket.emit('logStreamError', {
+                resourceId: data.resourceId,
+                error: `Failed to start log stream: ${error}`
+              });
+            }
+          } else {
+            // Already recording logs
+            socket.emit('logStreamStatus', {
+              resourceId: data.resourceId,
+              status: 'already-active'
+            });
+          }
+        } else {
+          // Stop logging
+          const pollingInterval = activeLogPollers.get(data.resourceId);
+          if (pollingInterval) {
+            // Stop polling
+            clearInterval(pollingInterval);
+            activeLogPollers.delete(data.resourceId);
+            
+            // Notify client that logs are no longer being recorded
+            socket.emit('logStreamStatus', {
+              resourceId: data.resourceId,
+              status: 'stopped'
+            });
+          } else {
+            socket.emit('logStreamStatus', {
+              resourceId: data.resourceId,
+              status: 'not-active'
+            });
+          }
+        }
+      });
+      
+      // Handle explicit sandbox status requests
+      socket.on('getSandboxStatus', () => {
+        printer.log('getSandboxStatus event received', LogLevel.DEBUG);
+        try {
+          const status = getSandboxState();
+          printer.log(`Emitting sandbox status on request: ${status}`, LogLevel.DEBUG);
+          
+          socket.emit('sandboxStatus', { 
+            status,
+            identifier: backendId.name 
+          });
+        } catch (error) {
+          printer.log(`Error getting sandbox status on request: ${error}`, LogLevel.ERROR);
           socket.emit('sandboxStatus', { 
             status: 'unknown', 
             error: `${error}`,
@@ -466,48 +977,25 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
         });
       });
       
-      try {
-        const status = await getStatus();
-        printer.log(`DEBUG: Emitting initial sandbox status: ${status}`, LogLevel.DEBUG);
-        
-        if (status === 'nonexistent') {
-          // For nonexistent sandbox, don't include identifier
-          printer.log('DEBUG: Sandbox does not exist, not including identifier', LogLevel.DEBUG);
-          socket.emit('sandboxStatus', { 
-            status: 'nonexistent'
-          });
-        } else {
-          // For other statuses, include the identifier
-          printer.log(`DEBUG: Sandbox identifier: ${backendId.name}`, LogLevel.DEBUG);
-          socket.emit('sandboxStatus', { 
-            status,
-            identifier: backendId.name 
-          });
-        }
-      } catch (error) {
-        printer.log(`DEBUG: Error getting sandbox status on connection: ${error}`, LogLevel.ERROR);
-        socket.emit('sandboxStatus', { 
-          status: 'unknown', 
-          error: `${error}`,
-          identifier: backendId.name 
-        });
-      }
+      // Send the current sandbox state to the client
+      printer.log(`Emitting initial sandbox status: ${sandboxState}`, LogLevel.DEBUG);
+      printer.log(`Sandbox identifier: ${backendId.name}`, LogLevel.DEBUG);
+      socket.emit('sandboxStatus', { 
+        status: sandboxState,
+        identifier: backendId.name 
+      });
 
       // Handle resource requests
       socket.on('getDeployedBackendResources', async () => {
         try {
-          // First check the sandbox status
-          const status = await getStatus();
-          
-          // If sandbox doesn't exist, return empty resources with a message
-          if (status === 'nonexistent') {
-            printer.log('No sandbox exists, returning empty resources', LogLevel.INFO);
+          // Try to load saved resources first
+          const savedResources = storageManager.loadResources();
+          if (savedResources) {
+            printer.log('Found saved resources, returning them', LogLevel.INFO);
+            const status = getSandboxState();
             socket.emit('deployedBackendResources', {
-              name: backendId.name,
-              status: 'nonexistent',
-              resources: [],
-              region: null,
-              message: 'No sandbox exists. Please create a sandbox first.'
+              ...savedResources,
+              status
             });
             return;
           }
@@ -548,9 +1036,28 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
             // Process resources and add friendly names
             const resourcesWithFriendlyNames = data.resources.map((resource) => {
               const logicalId = resource.logicalResourceId || '';
+              let resourceType = resource.resourceType || '';
+              
+              // Remove CUSTOM:: prefix from resource type
+              if (resourceType.startsWith('CUSTOM::')) {
+                resourceType = resourceType.substring(8); // Remove "CUSTOM::" (8 characters)
+              } else if (resourceType.startsWith('Custom::')) {
+                resourceType = resourceType.substring(8); // Remove "Custom::" (8 characters)
+              }
+              
+              // Check if the resource has metadata with a construct path
+              // Use a type guard to check if the resource has a metadata property
+              const metadata = 'metadata' in resource && 
+                              typeof resource.metadata === 'object' && 
+                              resource.metadata !== null && 
+                              'constructPath' in resource.metadata ? { 
+                constructPath: resource.metadata.constructPath as string
+              } : undefined;
+              
               return {
                 ...resource,
-                friendlyName: createFriendlyName(logicalId),
+                resourceType: resourceType,
+                friendlyName: createFriendlyName(logicalId, metadata),
               } as ResourceWithFriendlyName;
             });
 
@@ -560,6 +1067,9 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
               region,
               resources: resourcesWithFriendlyNames,
             };
+            
+            // Save resources to local storage for persistence
+            storageManager.saveResources(enhancedData);
 
             socket.emit('deployedBackendResources', enhancedData);
           } catch (error) {
@@ -605,20 +1115,25 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
       socket.on('startSandboxWithOptions', async (options) => {
         try {
           printer.log(`DEBUG: startSandboxWithOptions event received`, LogLevel.INFO);
-          const status = await getStatus();
           
-          if (status !== 'running') {
+          if (sandboxState !== 'running') {
             printer.log('Starting sandbox with options...', LogLevel.INFO);
+            
+            // Update sandbox state to deploying
+            sandboxState = 'deploying';
+            
             io.emit('sandboxStatus', { 
-              status: 'deploying',
+              status: sandboxState,
               identifier: options.identifier || backendId.name
             });
             
             try {
+              debugModeEnabled = false;
+              
               if (options.debugMode) {
                 debugModeEnabled = true;
-                printer.log('Debug mode enabled', LogLevel.INFO);
-              }
+                printer.log('Debug mode enabled', LogLevel.DEBUG);
+              } 
               
               const sandboxOptions = {
                 watchForChanges: !options.once,
@@ -687,39 +1202,120 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
 
       socket.on('stopSandbox', async () => {
         try {
-          printer.log('DEBUG: stopSandbox event received', LogLevel.DEBUG);
-          const status = await getStatus();
+          printer.log('DEBUG: stopSandbox event received from client', LogLevel.DEBUG);
           
-          if (status === 'running') {
-            printer.log('Stopping sandbox...', LogLevel.INFO);
+          // Log the current sandbox state
+          printer.log(`DEBUG: Current sandbox state: ${sandboxState}`, LogLevel.DEBUG);
+          
+          // Check if sandbox is running using getSandboxState()
+          const runningSandboxStatus = getSandboxState();
+          printer.log(`DEBUG: getSandboxState() returned: ${runningSandboxStatus}`, LogLevel.DEBUG);
+          
+          // Log event listeners
+          printer.log(`DEBUG: Sandbox event listeners: successfulDeployment=${sandbox.listenerCount('successfulDeployment')}, failedDeployment=${sandbox.listenerCount('failedDeployment')}`, LogLevel.DEBUG);
+          
+          // Use the actual running status instead of sandboxState
+          if (runningSandboxStatus === 'running') {
+            printer.log('Stopping sandbox...', LogLevel.DEBUG);
             
             try {
               await sandbox.stop();
+              printer.log('sandbox.stop() completed successfully', LogLevel.DEBUG);
+              
+              // State is updated by sandbox.stop() internally, but we'll get it again to be sure
+              const newState = getSandboxState();
+              printer.log(`After stop, isSandboxRunning() returned: ${newState}`, LogLevel.DEBUG);
+              
+              // Notify all clients about the state change
+              printer.log(`DEBUG: Broadcasting sandboxStatus event with status '${sandboxState}' to all clients via io.emit`, LogLevel.DEBUG);
+              io.emit('sandboxStatus', { 
+                status: sandboxState, // sandboxState was updated by isSandboxRunning()
+                identifier: backendId.name
+              });
+              printer.log(`DEBUG: Emitted sandboxStatus event with status '${sandboxState}'`, LogLevel.DEBUG);
+              
               printer.log('Sandbox stopped successfully', LogLevel.INFO);
             } catch (stopError) {
               printer.log(`DEBUG: Error in sandbox.stop(): ${stopError}`, LogLevel.ERROR);
+              if (stopError instanceof Error && stopError.stack) {
+                printer.log(`DEBUG: Error stack: ${stopError.stack}`, LogLevel.DEBUG);
+              }
               throw stopError;
             }
           } else {
             printer.log('Sandbox is not running', LogLevel.INFO);
+            printer.log(`DEBUG: Not calling sandbox.stop() because isSandboxRunning() returned '${runningSandboxStatus}'`, LogLevel.DEBUG);
             io.emit('sandboxStatus', { 
-              status: 'stopped',
+              status: sandboxState,
               identifier: backendId.name
             });
           }
         } catch (error) {
           printer.log(`Error stopping sandbox: ${error}`, LogLevel.ERROR);
+          if (error instanceof Error && error.stack) {
+            printer.log(`DEBUG: Error stack: ${error.stack}`, LogLevel.DEBUG);
+          }
         }
       });
       
-      socket.on('deleteSandbox', async () => {
+      // Handle delete confirmation request
+      socket.on('confirmDeleteSandbox', () => {
+        // Get the current state directly from the sandbox
+        const status = getSandboxState();
+        printer.log(`DEBUG: confirmDeleteSandbox - isSandboxRunning() returned: ${status}`, LogLevel.DEBUG);
+        
+        // Check if the sandbox exists based on its state
+        if (status === 'running' || status === 'stopped') {
+          // Ask for confirmation
+          printer.log('DEBUG: Sandbox exists, requesting confirmation for deletion', LogLevel.DEBUG);
+          socket.emit('confirmAction', {
+            action: 'deleteSandbox',
+            message: 'Are you sure you want to delete this sandbox? All resources will be removed and any data will be lost.',
+            title: 'Confirm Sandbox Deletion'
+          });
+        } else {
+          printer.log('DEBUG: Sandbox does not exist, no need for deletion', LogLevel.DEBUG);
+          socket.emit('actionResult', {
+            action: 'deleteSandbox',
+            success: false,
+            message: 'No sandbox exists to delete.'
+          });
+        }
+      });
+      
+      // Handle actual sandbox deletion after confirmation
+      socket.on('deleteSandbox', async (confirmed = false) => {
         try {
           printer.log('DEBUG: deleteSandbox event received', LogLevel.DEBUG);
-          const status = await getStatus();
+          printer.log(`DEBUG: Confirmation status: ${confirmed}`, LogLevel.DEBUG);
           
-          if (status !== 'nonexistent') {
+          // If not confirmed, request confirmation first
+          if (!confirmed) {
+            printer.log('DEBUG: Requesting confirmation for sandbox deletion', LogLevel.DEBUG);
+            socket.emit('confirmAction', {
+              action: 'deleteSandbox',
+              message: 'Are you sure you want to delete this sandbox? All resources will be removed and any data will be lost.',
+              title: 'Confirm Sandbox Deletion'
+            });
+            return;
+          }
+          
+          // Log the current sandbox state
+          printer.log(`DEBUG: Current sandbox state: ${sandboxState}`, LogLevel.DEBUG);
+          
+          // Check if sandbox is running using getSandboxState()
+          const status = getSandboxState();
+          printer.log(`DEBUG: isSandboxRunning() returned: ${status}`, LogLevel.DEBUG);
+          
+          // Log event listeners
+          printer.log(`DEBUG: Sandbox event listeners: successfulDeployment=${sandbox.listenerCount('successfulDeployment')}, failedDeployment=${sandbox.listenerCount('failedDeployment')}`, LogLevel.DEBUG);
+          
+          // Since isSandboxRunning() returns 'running', 'stopped', or 'unknown',
+          // we need to check if the sandbox exists differently
+          if (status === 'running' || status === 'stopped') {
             printer.log('Deleting sandbox...', LogLevel.INFO);
             
+            printer.log('DEBUG: Updating sandbox status to deploying', LogLevel.DEBUG);
             io.emit('sandboxStatus', { 
               status: 'deploying',
               identifier: backendId.name
@@ -728,52 +1324,141 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
             // Clear any existing deployment state
             deploymentInProgress = false;
             recentDeploymentMessages.clear();
+            printer.log('DEBUG: Cleared deployment state', LogLevel.DEBUG);
             
             // Emit deployment starting event
             io.emit('deploymentInProgress', {
               message: 'Starting sandbox deletion...',
               timestamp: new Date().toISOString()
             });
+            printer.log('DEBUG: Emitted deploymentInProgress event', LogLevel.DEBUG);
             
             try {
               if (status === 'running') {
+                printer.log('DEBUG: Sandbox is running, stopping it first', LogLevel.DEBUG);
                 await sandbox.stop();
+                printer.log('DEBUG: sandbox.stop() completed successfully', LogLevel.DEBUG);
+              } else {
+                printer.log('DEBUG: Sandbox is not running, proceeding with deletion', LogLevel.DEBUG);
               }
               
+              printer.log('DEBUG: Calling sandbox.delete()', LogLevel.DEBUG);
               await sandbox.delete({ identifier: backendId.name });
+              printer.log('DEBUG: sandbox.delete() completed successfully', LogLevel.DEBUG);
               
-              io.emit('sandboxStatus', { 
-                status: 'nonexistent'
+              // Update sandbox state
+              sandboxState = 'nonexistent';
+              printer.log(`DEBUG: Updated sandboxState to '${sandboxState}'`, LogLevel.DEBUG);
+              
+              // Emit sandbox status update with deployment completion info
+              const statusData = { 
+                status: 'nonexistent',
+                deploymentCompleted: true,
+                message: 'Sandbox deleted successfully',
+                timestamp: new Date().toISOString()
+              };
+              
+              // Log the data being sent
+              printer.log(`DEBUG: About to emit sandboxStatus event with data: ${JSON.stringify(statusData)}`, LogLevel.DEBUG);
+              
+              // Emit to all connected clients
+              io.emit('sandboxStatus', statusData);
+              
+              // Also emit to each socket individually to ensure delivery
+              io.sockets.sockets.forEach((socket) => {
+                printer.log(`DEBUG: Emitting sandboxStatus directly to socket ${socket.id}`, LogLevel.DEBUG);
+                socket.emit('sandboxStatus', statusData);
               });
               
-              // Emit deployment completed event
-              io.emit('deploymentCompleted', {
-                timestamp: new Date().toISOString(),
-                message: 'Sandbox deleted successfully'
-              });
+              printer.log('DEBUG: Emitted sandboxStatus event with status nonexistent and deploymentCompleted flag', LogLevel.DEBUG);
               
               printer.log('Sandbox deleted successfully', LogLevel.INFO);
             } catch (deleteError) {
               printer.log(`DEBUG: Error in sandbox operations: ${deleteError}`, LogLevel.ERROR);
+              if (deleteError instanceof Error && deleteError.stack) {
+                printer.log(`DEBUG: Error stack: ${deleteError.stack}`, LogLevel.DEBUG);
+              }
               throw deleteError;
             }
           } else {
             printer.log('Sandbox does not exist', LogLevel.INFO);
+            printer.log('DEBUG: Not calling sandbox.delete() because sandbox does not exist', LogLevel.DEBUG);
             io.emit('sandboxStatus', { 
               status: 'nonexistent'
             });
           }
         } catch (error) {
           printer.log(`Error deleting sandbox: ${error}`, LogLevel.ERROR);
+          if (error instanceof Error && error.stack) {
+            printer.log(`DEBUG: Error stack: ${error.stack}`, LogLevel.DEBUG);
+          }
         }
       });
     });
 
     // Keep the process running until Ctrl+C
-    process.once('SIGINT', () => {
+    process.once('SIGINT', async () => {
       printer.print(`${EOL}Stopping the devtools server.`);
+      
+      // Check if sandbox is running and stop it
+      const status = getSandboxState();
+      printer.log(`DEBUG: SIGINT handler - isSandboxRunning() returned: ${status}`, LogLevel.DEBUG);
+      
+      if (status === 'running') {
+        printer.log('Stopping sandbox before exiting...', LogLevel.INFO);
+        try {
+          printer.log('DEBUG: Calling sandbox.stop() from SIGINT handler', LogLevel.DEBUG);
+          await sandbox.stop();
+          printer.log('Sandbox stopped successfully', LogLevel.INFO);
+        } catch (error) {
+          printer.log(`Error stopping sandbox: ${error}`, LogLevel.ERROR);
+          if (error instanceof Error && error.stack) {
+            printer.log(`DEBUG: Error stack: ${error.stack}`, LogLevel.DEBUG);
+          }
+        }
+      }
+      
+      // Clear all stored resources when devtools ends
+      printer.log('Clearing stored resources...', LogLevel.DEBUG);
+      storageManager.clearAll();
+      printer.log('Stored resources cleared', LogLevel.DEBUG);
+      
+      // Close socket and server connections
       io.close();
       server.close();
+    });
+    
+    // Also handle process termination signals
+    process.once('SIGTERM', async () => {
+      printer.print(`${EOL}DevTools server is being terminated.`);
+      
+      // Check if sandbox is running and stop it
+      const status = getSandboxState();
+      printer.log(`DEBUG: SIGTERM handler - isSandboxRunning() returned: ${status}`, LogLevel.DEBUG);
+      
+      if (status === 'running') {
+        printer.log('Stopping sandbox before exiting...', LogLevel.INFO);
+        try {
+          printer.log('DEBUG: Calling sandbox.stop() from SIGTERM handler', LogLevel.DEBUG);
+          await sandbox.stop();
+          printer.log('Sandbox stopped successfully', LogLevel.INFO);
+        } catch (error) {
+          printer.log(`Error stopping sandbox: ${error}`, LogLevel.ERROR);
+          if (error instanceof Error && error.stack) {
+            printer.log(`DEBUG: Error stack: ${error.stack}`, LogLevel.DEBUG);
+          }
+        }
+      }
+      
+      // Clear all stored resources when devtools ends
+      printer.log('Clearing stored resources...', LogLevel.DEBUG);
+      storageManager.clearAll();
+      printer.log('Stored resources cleared', LogLevel.DEBUG);
+      
+      // Close socket and server connections
+      io.close();
+      server.close();
+      process.exit(0);
     });
 
     // Wait indefinitely

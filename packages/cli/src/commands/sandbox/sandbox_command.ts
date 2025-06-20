@@ -2,6 +2,7 @@ import { ArgumentsCamelCase, Argv, CommandModule } from 'yargs';
 import fs from 'fs';
 import fsp from 'fs/promises';
 import { LogLevel, format, printer } from '@aws-amplify/cli-core';
+import { isDevToolsRunning } from './port_checker.js';
 import {
   SandboxFunctionStreamingOptions,
   SandboxSingletonFactory,
@@ -165,6 +166,16 @@ export class SandboxCommand
     printer.log(`DEBUG: - watchForChanges: ${!args.once}`, LogLevel.DEBUG);
     printer.log(`DEBUG: - functionStreamingOptions: ${JSON.stringify(functionStreamingOptions)}`, LogLevel.DEBUG);
     
+    // Check if DevTools is running (asks user to start sandbox in Devtools, so Devtools can manage the sandbox)
+    const devToolsRunning = await isDevToolsRunning();
+    if (devToolsRunning) {
+      printer.log('DevTools is currently running', LogLevel.ERROR);
+      throw new AmplifyUserError('DevToolsRunningError', {
+        message: 'DevTools is currently running. Please start the sandbox through DevTools instead.',
+        resolution: 'Open DevTools in your browser and use the "Start Sandbox" button to start the sandbox.',
+      });
+    }
+    
     try {
       await sandbox.start({
         dir: args.dirToWatch,
@@ -323,15 +334,8 @@ export class SandboxCommand
     printer.log('DEBUG: sigIntHandler called - stopping sandbox process', LogLevel.DEBUG);
     try {
       const sandbox = await this.sandboxFactory.getInstance();
-      const status = await sandbox.getStatus();
-      printer.log(`DEBUG: Current sandbox status before stopping: ${status}`, LogLevel.DEBUG);
-      
-      if (status === 'running') {
-        printer.log('DEBUG: Attempting to stop sandbox', LogLevel.DEBUG);
-        await sandbox.stop();
-      } else {
-        printer.log(`DEBUG: Sandbox not running (status: ${status}), no need to stop`, LogLevel.DEBUG);
-      }
+      printer.log('DEBUG: Attempting to stop sandbox', LogLevel.DEBUG);
+      await sandbox.stop();
     } catch (error) {
       printer.log(`DEBUG: Error in sigIntHandler: ${error}`, LogLevel.ERROR);
     }

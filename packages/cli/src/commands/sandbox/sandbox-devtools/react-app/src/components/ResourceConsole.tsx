@@ -2,6 +2,7 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { Socket } from 'socket.io-client';
 import { useResourceManager, Resource } from './ResourceManager';
 import { getAwsConsoleUrl, ResourceWithFriendlyName } from '../../../resource_console_functions';
+import ResourceLogPanel from './ResourceLogPanel';
 import '@cloudscape-design/global-styles/index.css';
 import {
   Button,
@@ -20,7 +21,7 @@ import {
   Grid,
   Multiselect,
   SelectProps,
-  Alert
+  Badge
 } from '@cloudscape-design/components';
 
 interface ResourceConsoleProps {
@@ -39,18 +40,46 @@ type ColumnDefinition = {
 
 const ResourceConsole: React.FC<ResourceConsoleProps> = ({ socket, sandboxStatus = 'unknown' }) => {
   const [lastRefreshTime, setLastRefreshTime] = useState<number>(0);
-  const [deploymentInProgress, setDeploymentInProgress] = useState<boolean>(false);
   const [deploymentMessage, setDeploymentMessage] = useState<string>('');
+  // Use sandboxStatus prop to determine if deployment is in progress
+  const deploymentInProgress = sandboxStatus === 'deploying';
   const [initializing, setInitializing] = useState<boolean>(true);
+  const [activeLogStreams, setActiveLogStreams] = useState<string[]>([]);
+  const [selectedLogResource, setSelectedLogResource] = useState<Resource | null>(null);
+  const [showLogViewer, setShowLogViewer] = useState<boolean>(false);
+  // Removed unused logEntries state
   const REFRESH_COOLDOWN_MS = 5000; // 5 seconds minimum between refreshes
   
+  // Helper function to check if a resource supports logs
+  const supportsLogs = (resource: Resource): boolean => {
+    return (
+      resource.resourceType === 'AWS::Lambda::Function' ||
+      resource.resourceType === 'AWS::ApiGateway::RestApi' ||
+      resource.resourceType === 'AWS::AppSync::GraphQLApi'
+    );
+  };
+
+  // Wrap refreshResources with rate limiting
+  const { resources, loading, error, refreshResources: originalRefreshResources } = useResourceManager(socket, undefined, sandboxStatus);
+  
+  // Get the AWS region from the resources data - Moved before columnDefinitions
+  const region = useMemo(() => {
+    return resources?.region || null;
+  }, [resources]);
+
   // Define column definitions for all tables
   const columnDefinitions = React.useMemo<ColumnDefinition[]>(() => [
     {
       id: 'name',
       header: 'Resource Name',
       cell: (item: Resource) => {
-        return getFriendlyResourceName(item);
+        const isLogging = activeLogStreams.includes(item.physicalResourceId);
+        return (
+          <SpaceBetween direction="horizontal" size="xs">
+            {getFriendlyResourceName(item)}
+            {isLogging && <Badge color="green">Logging</Badge>}
+          </SpaceBetween>
+        );
       },
       width: 600,
       minWidth: 200
@@ -85,23 +114,75 @@ const ResourceConsole: React.FC<ResourceConsoleProps> = ({ socket, sandboxStatus
       minWidth: 300
     },
     {
-      id: 'console',
-      header: 'AWS Console',
+      id: 'actions',
+      header: 'Actions',
       cell: (item: Resource) => {
         const url = getAwsConsoleUrl(item as ResourceWithFriendlyName, region);
+        const isLogging = activeLogStreams.includes(item.physicalResourceId);
         
-        return url ? (
-          <Link href={url} external>
-            View in AWS Console
-          </Link>
-        ) : (
-          <span>Not available</span>
+        return (
+          <SpaceBetween direction="horizontal" size="xs">
+            {url && (
+              <Link href={url} external>
+                View in AWS Console
+              </Link>
+            )}
+            {supportsLogs(item) && (
+              <SpaceBetween direction="horizontal" size="xs">
+                {/* Toggle button for starting/stopping log recording */}
+                <Button 
+                  variant="link" 
+                  onClick={() => {
+                    if (isLogging) {
+                      // Stop recording logs
+                      if (socket) {
+                        socket.emit('toggleResourceLogging', { 
+                          resourceId: item.physicalResourceId,
+                          resourceType: item.resourceType,
+                          startLogging: false
+                        });
+                      }
+                    } else {
+                      // Start recording logs
+                      if (socket) {
+                        socket.emit('toggleResourceLogging', { 
+                          resourceId: item.physicalResourceId,
+                          resourceType: item.resourceType,
+                          startLogging: true
+                        });
+                      }
+                    }
+                  }}
+                  disabled={!!(showLogViewer && selectedLogResource && selectedLogResource.physicalResourceId === item.physicalResourceId)}
+                >
+                  {isLogging ? "Stop Logs" : "Start Logs"}
+                </Button>
+                
+                {/* Separate button for viewing logs */}
+                <Button 
+                  variant="link" 
+                  onClick={() => {
+                    // View logs without starting/stopping recording
+                    if (socket) {
+                      socket.emit('viewResourceLogs', { 
+                        resourceId: item.physicalResourceId
+                      });
+                    }
+                    setSelectedLogResource(item);
+                    setShowLogViewer(true);
+                  }}
+                >
+                  View Logs
+                </Button>
+              </SpaceBetween>
+            )}
+          </SpaceBetween>
         );
       },
       width: 250,
       minWidth: 250
     }
-  ], []);
+  ], [activeLogStreams, region, selectedLogResource]);
 
   // Empty state for tables
   const emptyState = (
@@ -113,9 +194,6 @@ const ResourceConsole: React.FC<ResourceConsoleProps> = ({ socket, sandboxStatus
       </SpaceBetween>
     </Box>
   );
-  
-  // Wrap refreshResources with rate limiting
-  const { resources, loading, error, refreshResources: originalRefreshResources } = useResourceManager(socket, undefined, sandboxStatus);
   
   // Clear initializing state after a timeout or when resources are loaded
   useEffect(() => {
@@ -131,64 +209,111 @@ const ResourceConsole: React.FC<ResourceConsoleProps> = ({ socket, sandboxStatus
     return () => clearTimeout(timer);
   }, [resources]);
   
-  // Listen for deployment in progress events
+  // Listen for deployment messages
   useEffect(() => {
     if (!socket) return;
     
     const handleDeploymentInProgress = (data: { message: string }) => {
       console.log('ResourceConsole: Deployment in progress:', data.message);
-      setDeploymentInProgress(true);
       setDeploymentMessage(data.message);
     };
     
     socket.on('deploymentInProgress', handleDeploymentInProgress);
     
-    // Reset deployment in progress when resources are updated
-    const handleResourcesUpdated = () => {
-      console.log('ResourceConsole: Resources updated, clearing deployment status');
-      setDeploymentInProgress(false);
-      setDeploymentMessage('');
+    // Reset deployment message when resources are updated
+    // const handleResourcesUpdated = () => {
+    //   console.log('ResourceConsole: Resources updated, clearing deployment message');
+    //   setDeploymentMessage('');
+    // };
+    
+    // Handle sandbox status updates
+    // const handleSandboxStatus = (data: { 
+    //   status: string, 
+    //   deploymentCompleted?: boolean,
+    //   message?: string
+    // }) => {
+    //   // If this is a deployment completion event, refresh resources
+    //   if (data.deploymentCompleted) {
+    //     console.log('ResourceConsole: Deployment completed via sandboxStatus, refreshing resources');
+    //     setDeploymentMessage('');
+    //     originalRefreshResources();
+    //   }
+      
+    //   // Update UI based on status
+    //   if (data.status === 'deploying') {
+    //     setDeploymentMessage('Sandbox is being deployed...');
+    //   } else if (data.status === 'running') {
+    //     // Clear deployment message when status changes to running
+    //     setDeploymentMessage('');
+    //   }
+    // };
+    
+    
+    // Get active log streams on initial load
+    socket.emit('getActiveLogStreams');
+    
+    // Handle active log streams
+    const handleActiveLogStreams = (streams: string[]) => {
+      console.log('ResourceConsole: Active log streams:', streams);
+      setActiveLogStreams(streams);
     };
     
-    socket.on('deployedBackendResources', handleResourcesUpdated);
-    
-    // Add a safety timeout to reset deployment status if it gets stuck
-    let deploymentTimeout: NodeJS.Timeout | null = null;
-    
-    if (deploymentInProgress) {
-      deploymentTimeout = setTimeout(() => {
-        console.log('ResourceConsole: Deployment status reset due to timeout');
-        setDeploymentInProgress(false);
-        setDeploymentMessage('');
-        // Force refresh resources
-        if (socket && socket.connected) {
-          socket.emit('getDeployedBackendResources');
+    // Handle log stream status updates
+    const handleLogStreamStatus = (data: { resourceId: string, status: string, error?: string }) => {
+      console.log(`ResourceConsole: Log stream status for ${data.resourceId}: ${data.status}`);
+      
+      if (data.status === 'active' || data.status === 'already-active') {
+        setActiveLogStreams(prev => {
+          if (!prev.includes(data.resourceId)) {
+            return [...prev, data.resourceId];
+          }
+          return prev;
+        });
+      } else if (data.status === 'stopped') {
+        setActiveLogStreams(prev => prev.filter(id => id !== data.resourceId));
+      } else if (data.status === 'error' && data.error) {
+        // Handle error case
+        console.error(`Log stream error for ${data.resourceId}: ${data.error}`);
+        
+        // If this was the selected resource, show error in log viewer
+        if (selectedLogResource && selectedLogResource.physicalResourceId === data.resourceId) {
+          // Keep the log viewer open but show error message
+          // The actual error message will be shown in the LogViewerModal component
         }
-      }, 60000); // 1 minute timeout
-    }
+      }
+    };
+    
+    // Handle log stream errors
+    const handleLogStreamError = (data: { resourceId: string, error: string }) => {
+      console.error(`ResourceConsole: Log stream error for ${data.resourceId}: ${data.error}`);
+      
+      // If this was the selected resource, show error in log viewer
+      if (selectedLogResource && selectedLogResource.physicalResourceId === data.resourceId) {
+        // Keep the log viewer open but show error message
+        // The actual error message will be shown in the LogViewerModal component
+      }
+    };
+    
+    socket.on('activeLogStreams', handleActiveLogStreams);
+    socket.on('logStreamStatus', handleLogStreamStatus);
+    socket.on('logStreamError', handleLogStreamError);
     
     return () => {
-      socket.off('deploymentInProgress', handleDeploymentInProgress);
-      socket.off('deployedBackendResources', handleResourcesUpdated);
-      if (deploymentTimeout) {
-        clearTimeout(deploymentTimeout);
-      }
+      socket.off('activeLogStreams', handleActiveLogStreams);
+      socket.off('logStreamStatus', handleLogStreamStatus);
+      socket.off('logStreamError', handleLogStreamError);
     };
-  }, [socket, deploymentInProgress]);
+  }, [socket, selectedLogResource]);
   
-  // Update deployment status when sandbox status changes
+  // Update deployment message when sandbox status changes
   useEffect(() => {
     if (sandboxStatus === 'deploying') {
-      setDeploymentInProgress(true);
       setDeploymentMessage('Sandbox is being deployed...');
     } else if (sandboxStatus === 'running') {
-      // Only clear deployment status if we were previously deploying
-      if (deploymentInProgress && deploymentMessage === 'Sandbox is being deployed...') {
-        setDeploymentInProgress(false);
-        setDeploymentMessage('');
-      }
+      // Always clear deployment message when status changes to running
+      setDeploymentMessage('');
     }
-  }, [sandboxStatus, deploymentInProgress, deploymentMessage]);
+  }, [sandboxStatus]);
   
   const refreshResources = React.useCallback(() => {
     const now = Date.now();
@@ -316,11 +441,6 @@ const ResourceConsole: React.FC<ResourceConsoleProps> = ({ socket, sandboxStatus
     return 'Unknown'; // Default for unknown status types
   };
 
-  // Get the AWS region from the resources data
-  const region = useMemo(() => {
-    return resources?.region || null;
-  }, [resources]);
-
   const regionAvailable = region !== null;
 
   // Check for nonexistent sandbox first, before showing loading spinner
@@ -443,7 +563,7 @@ const ResourceConsole: React.FC<ResourceConsoleProps> = ({ socket, sandboxStatus
       </Container>
     );
   }
-
+  
   return (
     <Container
       disableContentPaddings={false}
@@ -461,13 +581,13 @@ const ResourceConsole: React.FC<ResourceConsoleProps> = ({ socket, sandboxStatus
         >
           Deployed Resources
         </Header>
-        
+{/*         
         {deploymentInProgress && (
           <Alert type="info" header="Deployment in progress">
             {deploymentMessage || 'Sandbox deployment is in progress. Resources will update when deployment completes.'}
           </Alert>
         )}
-        
+         */}
         {!regionAvailable && (
           <StatusIndicator type="warning">
             AWS region could not be detected. Console links are unavailable.
@@ -537,6 +657,23 @@ const ResourceConsole: React.FC<ResourceConsoleProps> = ({ socket, sandboxStatus
           </ExpandableSection>
         ))}
       </SpaceBetween>
+      
+      {/* Log Viewer Modal */}
+      {showLogViewer && selectedLogResource && (
+        <ResourceLogPanel
+          resourceId={selectedLogResource.physicalResourceId}
+          resourceName={selectedLogResource.friendlyName || selectedLogResource.logicalResourceId}
+          resourceType={selectedLogResource.resourceType}
+          onClose={() => {
+            setShowLogViewer(false);
+            // Request updated active log streams when closing the panel
+            if (socket) {
+              socket.emit('getActiveLogStreams');
+            }
+          }}
+          socket={socket}
+        />
+      )}
     </Container>
   );
 };
@@ -607,5 +744,9 @@ const ResourceDisplay: React.FC<ResourceDisplayProps> = ({
     </SpaceBetween>
   );
 };
+        
+const ResourceConsoleWithLogs: React.FC<ResourceConsoleProps> = (props) => {
+  return <ResourceConsole {...props} />;
+};
 
-export default ResourceConsole;
+export default ResourceConsoleWithLogs;

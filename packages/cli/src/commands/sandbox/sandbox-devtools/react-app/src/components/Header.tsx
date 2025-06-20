@@ -24,7 +24,10 @@ const Header = ({ connected, onClear, sandboxStatus, sandboxIdentifier, onStartS
 
   // Reset loading state when sandbox status changes
   useEffect(() => {
-    console.log(`Header: sandboxStatus changed to ${sandboxStatus}`);
+    console.log(`[CLIENT] Header: sandboxStatus prop changed to ${sandboxStatus}`);
+    
+    // Always reset loading state when status changes, regardless of the new state
+    console.log(`[CLIENT] Header: Resetting isLoading to false due to status change: ${sandboxStatus}`);
     setIsLoading(false);
     
     // If status is still unknown after a delay, increment the timeout counter
