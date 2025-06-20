@@ -6,14 +6,14 @@ import {
   SpaceBetween,
   Box,
   Button,
-  Spinner
+  Spinner,
+  ExpandableSection
 } from '@cloudscape-design/components';
 
 interface DeploymentProgressProps {
   socket: Socket | null;
   visible: boolean;
-  status?: 'running' | 'stopped' | 'nonexistent' | 'unknown' | 'deploying';
-  deploymentCompleted?: boolean;
+  status: 'running' | 'stopped' | 'nonexistent' | 'unknown' | 'deploying';
 }
 
 interface ResourceStatus {
@@ -36,11 +36,18 @@ const DeploymentProgress: React.FC<DeploymentProgressProps> = ({
   visible, 
   status
 }) => {
-  // Determine if deployment is in progress based on status prop
-  const isDeploying = status === 'deploying';
   const [events, setEvents] = useState<DeploymentEvent[]>([]);
   const [resourceStatuses, setResourceStatuses] = useState<Record<string, ResourceStatus>>({});
   const containerRef = useRef<HTMLDivElement>(null);
+
+  const [expanded, setExpanded] = useState<boolean>(status === 'deploying');
+  
+  // Update expanded state when deployment status changes
+  useEffect(() => {
+    if (status === 'deploying') {
+      setExpanded(true);
+    }
+  }, [status]);
   
   // Parse deployment progress message to extract structured information
   const parseDeploymentMessage = (message: string): ResourceStatus | null => {
@@ -76,6 +83,16 @@ const DeploymentProgress: React.FC<DeploymentProgressProps> = ({
   useEffect(() => {
     if (!socket) return;
     
+    // Clear events if we're starting a new deployment
+    if (status === 'deploying') {
+      setEvents([]);
+      setResourceStatuses({});
+    }
+    
+    // Request saved deployment progress when component mounts
+    console.log('DeploymentProgress: Requesting saved deployment progress');
+    socket.emit('getSavedDeploymentProgress');
+    
     const handleDeploymentInProgress = (data: { message: string; timestamp: string }) => {
       // Try to parse the message as a CloudFormation event
       const resourceStatus = parseDeploymentMessage(data.message);
@@ -109,25 +126,56 @@ const DeploymentProgress: React.FC<DeploymentProgressProps> = ({
       }
     };
     
-    const handleDeploymentCompleted = (data: { message: string; timestamp: string; error?: boolean }) => {
+    // DeploymentProgress now gets sandbox status as a prop, no need to listen for sandboxStatus events
+    
+    // Handle saved deployment progress events
+    const handleSavedDeploymentProgress = (savedEvents: Array<{ message: string; timestamp: string }>) => {
+      console.log('Received saved deployment progress events:', savedEvents.length);
       
-      // Add completion event
-      setEvents(prev => [
-        ...prev, 
-        {
-          message: data.message || 'Deployment completed successfully',
-          timestamp: data.timestamp || new Date().toISOString(),
-          isGeneric: true
-        }
-      ]);
+      // If we're not deploying, process the saved events
+      if (status !== 'deploying') {
+        // Process each saved event
+        const newResourceStatuses: Record<string, ResourceStatus> = {};
+        const processedEvents: DeploymentEvent[] = [];
+        
+        savedEvents.forEach(data => {
+          // Try to parse the message as a CloudFormation event
+          const resourceStatus = parseDeploymentMessage(data.message);
+          
+          if (resourceStatus) {
+            // Update the resource status
+            newResourceStatuses[resourceStatus.key] = resourceStatus;
+            
+            // Add to events list
+            processedEvents.push({
+              message: data.message,
+              timestamp: data.timestamp || new Date().toISOString(),
+              resourceStatus
+            });
+          } else {
+            // Add as a generic event
+            processedEvents.push({
+              message: data.message,
+              timestamp: data.timestamp || new Date().toISOString(),
+              isGeneric: true
+            });
+          }
+        });
+        
+        // Update state with all processed events
+        setResourceStatuses(newResourceStatuses);
+        setEvents(processedEvents);
+      } else {
+        console.log('Ignoring saved deployment events because deployment is in progress');
+      }
     };
     
     socket.on('deploymentInProgress', handleDeploymentInProgress);
-    socket.on('deploymentCompleted', handleDeploymentCompleted);
+    socket.on('savedDeploymentProgress', handleSavedDeploymentProgress);
     
     return () => {
       socket.off('deploymentInProgress', handleDeploymentInProgress);
-      socket.off('deploymentCompleted', handleDeploymentCompleted);
+      socket.off('savedDeploymentProgress', handleSavedDeploymentProgress);
     };
   }, [socket]);
   
@@ -144,10 +192,7 @@ const DeploymentProgress: React.FC<DeploymentProgressProps> = ({
     setResourceStatuses({});
   };
   
-  // If not visible, don't render
-  if (!visible) {
-    return null;
-  }
+  const showContent = visible || events.length > 0;
   
   // Group resources by type for better organization
   const resourcesByType: Record<string, ResourceStatus[]> = {};
@@ -167,13 +212,13 @@ const DeploymentProgress: React.FC<DeploymentProgressProps> = ({
         <Header
           variant="h2"
           actions={
-            <Button onClick={clearEvents} disabled={isDeploying}>
+            <Button onClick={clearEvents} disabled={status === 'deploying'}>
               Clear Events
             </Button>
           }
         >
           Deployment Progress
-          {isDeploying && (
+          {status === 'deploying' && (
             <span style={{ marginLeft: '8px', display: 'inline-flex', alignItems: 'center' }}>
               <Spinner size="normal" /> 
               <span style={{ marginLeft: '4px' }}>In progress</span>
@@ -182,24 +227,32 @@ const DeploymentProgress: React.FC<DeploymentProgressProps> = ({
         </Header>
       }
     >
-      <div 
-        ref={containerRef}
-        style={{ 
-          overflow: 'auto', 
-          maxHeight: '500px',
-          backgroundColor: '#1a1a1a',
-          color: '#f0f0f0',
-          padding: '16px',
-          fontFamily: 'monospace',
-          fontSize: '14px',
-          borderRadius: '4px',
-          border: '1px solid #333'
-        }}
+      <ExpandableSection 
+        headerText={status === 'deploying' ? "Deployment in progress" : "Deployment history"}
+        expanded={expanded}
+        onChange={({ detail }) => setExpanded(detail.expanded)}
+        headerCounter={events.length > 0 ? `${events.length} events` : undefined}
+        headerDescription={status === 'deploying' ? "Deployment is currently running" : events.length > 0 ? "Previous deployment events" : "No deployment events"}
       >
+        {showContent && (
+          <div 
+            ref={containerRef}
+            style={{ 
+              overflow: 'auto', 
+              maxHeight: '500px',
+              backgroundColor: '#1a1a1a',
+              color: '#f0f0f0',
+              padding: '16px',
+              fontFamily: 'monospace',
+              fontSize: '14px',
+              borderRadius: '4px',
+              border: '1px solid #333'
+            }}
+          >
         {events.length === 0 ? (
           <Box textAlign="center" padding="m" color="inherit">
             <SpaceBetween size="m">
-              {isDeploying ? (
+              {status === 'deploying' ? (
                 <>
                   <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '10px' }}>
                     <Spinner />
@@ -277,7 +330,7 @@ const DeploymentProgress: React.FC<DeploymentProgressProps> = ({
               <div style={{ marginTop: '16px', borderTop: '1px solid #444', paddingTop: '16px' }}>
                 {events.filter(event => event.isGeneric).map((event, index) => (
                   <div key={index} style={{ marginBottom: '8px', display: 'flex', alignItems: 'center' }}>
-                    {isDeploying && index === events.filter(e => e.isGeneric).length - 1 ? (
+                    {status === 'deploying' && index === events.filter(e => e.isGeneric).length - 1 ? (
                       <div className="spinner" style={{ 
                         width: '12px', 
                         height: '12px', 
@@ -297,7 +350,9 @@ const DeploymentProgress: React.FC<DeploymentProgressProps> = ({
             )}
           </div>
         )}
-      </div>
+          </div>
+        )}
+      </ExpandableSection>
       
       {/* Add CSS for spinner animation */}
       <style>

@@ -15,10 +15,10 @@ import { DeployedBackendClientFactory } from '@aws-amplify/deployed-backend-clie
 import { S3Client } from '@aws-sdk/client-s3';
 import { AmplifyClient } from '@aws-sdk/client-amplify';
 import { CloudFormationClient } from '@aws-sdk/client-cloudformation';
-import { CloudWatchLogsClient, GetLogEventsCommand, DescribeLogStreamsCommand } from '@aws-sdk/client-cloudwatch-logs';
+import { CloudWatchLogsClient, DescribeLogStreamsCommand, GetLogEventsCommand } from '@aws-sdk/client-cloudwatch-logs';
 import { EOL } from 'os';
 import { LocalStorageManager } from './local_storage_manager.js';
-
+ 
 // Interface for resource with friendly name
 export type ResourceWithFriendlyName = {
   logicalResourceId: string;
@@ -32,6 +32,7 @@ export type ResourceWithFriendlyName = {
  * Creates a friendly name for a resource, using CDK metadata when available.
  * @param logicalId The logical ID of the resource
  * @param metadata Optional CDK metadata that may contain construct path
+ * @param metadata.constructPath Optional construct path from CDK metadata
  * @returns A user-friendly name for the resource
  */
 export function createFriendlyName(
@@ -91,50 +92,40 @@ function getFriendlyNameFromNestedStackName(stackName: string): string | undefin
 }
 
 /**
- * Finds an available port starting from the given port
+ * Attempts to start the server on the specified port
  * @param server The HTTP server
- * @param startPort The port to start from
- * @param maxAttempts The maximum number of attempts
- * @returns A promise that resolves when a port is found
+ * @param port The port to use
+ * @returns A promise that resolves with the port when the server starts
+ * @throws Error if the port is already in use
  */
 export async function findAvailablePort(
   server: ReturnType<typeof createServer>,
-  startPort: number,
-  maxAttempts: number,
+  port: number,
 ): Promise<number> {
-  let port = startPort;
-  let attempts = 0;
   let serverStarted = false;
 
-  while (!serverStarted && attempts < maxAttempts) {
-    try {
-      await new Promise<void>((resolve, reject) => {
-        server.listen(port, () => {
-          serverStarted = true;
-          resolve();
-        });
-
-        server.once('error', (err: NodeJS.ErrnoException) => {
-          if (err.code === 'EADDRINUSE') {
-            port++;
-            attempts++;
-            server.close();
-            resolve();
-          } else {
-            reject(err);
-          }
-        });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      server.listen(port, () => {
+        serverStarted = true;
+        resolve();
       });
-    } catch (error) {
-      printer.log(`Failed to start server: ${error}`, LogLevel.ERROR);
-      throw error;
-    }
+
+      server.once('error', (err: NodeJS.ErrnoException) => {
+        if (err.code === 'EADDRINUSE') {
+          reject(new Error(`Port ${port} is already in use. Please close any applications using this port and try again.`));
+        } else {
+          reject(err);
+        }
+      });
+    });
+  } catch (error) {
+    printer.log(`Failed to start server: ${error}`, LogLevel.ERROR);
+    throw error;
   }
 
   if (!serverStarted) {
-    throw new Error(
-      `Could not find an available port after ${maxAttempts} attempts`,
-    );
+    throw new Error(`Failed to start server on port ${port}`);
   }
 
   return port;
@@ -174,6 +165,7 @@ function isDeploymentProgressMessage(message: string): boolean {
  * Check if a message is a CDK deployment log that should be filtered from console
  * @param message The message to check
  * @returns True if the message should be filtered
+ * @internal
  */
 function shouldFilterFromConsole(message: string): boolean {
   const cleanedMessage = cleanAnsiCodes(message);
@@ -302,33 +294,29 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
       getCloudFormationClient: () => new CloudFormationClient(),
     });
 
-    // Function to determine the sandbox state and update related flags
-    const getSandboxState = () => {
-      try {
-        console.log('[DEBUG] Checking sandbox state');
-        // Use the sandbox's getState method to get the actual state
-        const state = sandbox.getState();
-        console.log(`[DEBUG] Sandbox state from getState(): ${state}`);
-        
-        // Update sandboxState to match actual state
-        sandboxState = state;
-        
-        // If the sandbox is not in 'deploying' state, set deploymentInProgress to false
-        if (state !== 'deploying') {
-          console.log(`[DEBUG] Sandbox is ${state}, setting deploymentInProgress to false`);
-          deploymentInProgress = false;
+      // Function to determine the sandbox state and update related flags
+      const getSandboxState = () => {
+        try {
+          // Use the sandbox's getState method to get the actual state
+          const state = sandbox.getState();
+          
+          // Update sandboxState to match actual state
+          sandboxState = state;
+          
+          // If the sandbox is not in 'deploying' state, set deploymentInProgress to false
+          if (state !== 'deploying') {
+            deploymentInProgress = false;
+          }
+          
+          return state;
+        } catch (error) {
+          printer.log(`Error checking sandbox status: ${error}`, LogLevel.ERROR);
+          return 'unknown';
         }
-        
-        return state;
-      } catch (error) {
-        console.log(`[DEBUG] Error checking sandbox status: ${error}`);
-        printer.log(`Error checking sandbox status: ${error}`, LogLevel.ERROR);
-        return 'unknown';
-      }
-    };
+      };
 
     // Find an available port starting from 3333
-    const port = await findAvailablePort(server, 3333, 10);
+    const port = await findAvailablePort(server, 3333);
 
     printer.print(
       `${EOL}DevTools server started at ${format.highlight(`http://localhost:${port}`)}`,
@@ -338,21 +326,20 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
     const open = (await import('open')).default;
     await open(`http://localhost:${port}`);
 
-    // Override the printer's log and print methods to also emit logs to the client
-    const originalLog = printer.log;
-    const originalPrint = printer.print;
-    
-    // Track debug mode state
+    // Track debug mode state (used when options.debugMode is true)
     let debugModeEnabled = false;
     
-    // Track deployment in progress state
+    // Track deployment in progress state (used to update UI state)
     let deploymentInProgress = false;
     
     // Track sandbox state - can be 'running', 'stopped', 'nonexistent', 'deploying', or 'unknown'
-    let sandboxState = 'stopped';
+    let sandboxState = 'unknown';
     
     // Store recent deployment messages to avoid duplicates
     const recentDeploymentMessages = new Set<string>();
+    
+    // Store original printer methods
+    const originalPrint = printer.print;
     
     // Function to handle deployment progress messages
     const handleDeploymentProgressMessage = (message: string) => {
@@ -446,41 +433,23 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
     // Flag to prevent recursive logging
     let isHandlingLog = false;
     
-    // Create a message deduplication cache with a TTL
-    const recentLogMessages = new Map<string, number>();
-    const MESSAGE_TTL = 1000; // 1 second TTL for duplicate messages
+
+    // Track the original log level of messages
+    const messageLogLevels = new Map<string, LogLevel>();
     
-    // Function to check if a message is a duplicate
-    const isDuplicateMessage = (message: string, level: LogLevel): boolean => {
-      const key = `${level}:${message}`;
-      const now = Date.now();
-      
-      // Check if we've seen this message recently
-      const lastSeen = recentLogMessages.get(key);
-      if (lastSeen && now - lastSeen < MESSAGE_TTL) {
-        return true;
-      }
-      
-      // Update the last seen time
-      recentLogMessages.set(key, now);
-      
-      // Clean up old entries
-      if (recentLogMessages.size > 100) {
-        const keysToDelete = [];
-        for (const [mapKey, timestamp] of recentLogMessages.entries()) {
-          if (now - timestamp > MESSAGE_TTL) {
-            keysToDelete.push(mapKey);
-          }
-        }
-        keysToDelete.forEach(key => recentLogMessages.delete(key));
-      }
-      
-      return false;
-    };
-    
+    // Override the original log function to track log levels
+    const originalLog = printer.log;
     printer.log = function(message: string, level: LogLevel = LogLevel.INFO) {
-      // Always call the original log method for server-side logging
+      // Store the log level for this message
+      messageLogLevels.set(message, level);
+      
+      // Call the original log method with tracking
       originalLog.call(this, message, level);
+      
+      // Clean up the map after a delay to prevent memory leaks
+      setTimeout(() => {
+        messageLogLevels.delete(message);
+      }, 5000); // Clean up after 5 seconds
       
       // Skip DEBUG level messages from being sent to the client
       if (level === LogLevel.DEBUG) {
@@ -507,15 +476,10 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
         }
       }
       
-      // Check for duplicate messages
-      if (isDuplicateMessage(finalMessage, level)) {
-        return;
-      }
-      
       // Emit the log to the client (except DEBUG messages)
       io.emit('log', {
         timestamp: new Date().toISOString(),
-        level: LogLevel[level], // This correctly maps the enum to string
+        level: LogLevel[level],
         message: finalMessage
       });
     };
@@ -550,6 +514,14 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
         }
       }
       
+      // Check if this message was originally logged with a specific level
+      // If it was logged with DEBUG level, don't send it to the UI
+      for (const [originalMsg, level] of messageLogLevels.entries()) {
+        if (message.includes(originalMsg) && level === LogLevel.DEBUG) {
+          return; // Skip sending DEBUG messages to the UI
+        }
+      }
+      
       // Emit the log to the client
       io.emit('log', {
         timestamp: new Date().toISOString(),
@@ -570,7 +542,6 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
 
     // Get initial sandbox status and set sandboxState
     const initialStatus = getSandboxState();
-    printer.log(`DEBUG: Initial sandbox status: ${initialStatus}`, LogLevel.DEBUG);
     sandboxState = initialStatus; // This will update sandboxState to match the actual state
 
     // Listen for resource configuration changes
@@ -613,11 +584,7 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
       // Emit to all connected clients
       io.emit('sandboxStatus', statusData);
       
-      // Also emit to each socket individually to ensure delivery
-      io.sockets.sockets.forEach((socket) => {
-        printer.log(`DEBUG: Emitting sandboxStatus directly to socket ${socket.id}`, LogLevel.DEBUG);
-        socket.emit('sandboxStatus', statusData);
-      });
+      
       
       printer.log(`DEBUG: Emitted sandboxStatus event with status '${sandboxState}' and deploymentCompleted flag`, LogLevel.INFO);
     });
@@ -651,12 +618,7 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
       
       // Emit to all connected clients
       io.emit('sandboxStatus', statusData);
-      
-      // Also emit to each socket individually to ensure delivery
-      io.sockets.sockets.forEach((socket) => {
-        printer.log(`DEBUG: Emitting sandboxStatus directly to socket ${socket.id}`, LogLevel.DEBUG);
-        socket.emit('sandboxStatus', statusData);
-      });
+    
       
       printer.log(`DEBUG: Emitted sandboxStatus event with status '${currentState}' and deployment failure info`, LogLevel.INFO);
     });
@@ -716,7 +678,10 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
       // Handle request for active log streams
       socket.on('getActiveLogStreams', () => {
         printer.log('DEBUG: getActiveLogStreams event received', LogLevel.DEBUG);
-        const resourceIds = storageManager.getResourcesWithCloudWatchLogs();
+        // Use getResourcesWithActiveLogging instead of getResourcesWithCloudWatchLogs
+        // to only return resources that are actively being logged
+        const resourceIds = storageManager.getResourcesWithActiveLogging();
+        printer.log(`DEBUG: Active log streams: ${resourceIds.join(', ') || 'none'}`, LogLevel.DEBUG);
         socket.emit('activeLogStreams', resourceIds);
       });
       
@@ -725,46 +690,19 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
       
       // Handle view resource logs request (without starting/stopping recording)
       socket.on('viewResourceLogs', (data: { resourceId: string }) => {
-        printer.log(`DEBUG: viewResourceLogs event received for ${data.resourceId}`, LogLevel.INFO);
+        printer.log(`Viewing logs for resource ${data.resourceId}`, LogLevel.DEBUG);
         
         try {
           // Load saved logs for this resource
-          printer.log(`DEBUG: Loading CloudWatch logs for resource ${data.resourceId}`, LogLevel.INFO);
           const logs = storageManager.loadCloudWatchLogs(data.resourceId);
-          printer.log(`DEBUG: Loaded ${logs ? logs.length : 0} CloudWatch logs for resource ${data.resourceId}`, LogLevel.INFO);
           
           // Send logs to client
-          printer.log(`DEBUG: Emitting savedResourceLogs event for resource ${data.resourceId}`, LogLevel.INFO);
           socket.emit('savedResourceLogs', {
             resourceId: data.resourceId,
             logs: logs || [] // Ensure we always send an array, even if no logs exist
           });
-          printer.log(`DEBUG: Emitted savedResourceLogs event for resource ${data.resourceId}`, LogLevel.INFO);
-          
-          // Create a dummy log entry if no logs exist, for testing purposes
-          if (!logs || logs.length === 0) {
-            printer.log(`DEBUG: No logs found for resource ${data.resourceId}, creating dummy log entry`, LogLevel.INFO);
-            const dummyLog = {
-              timestamp: new Date().toISOString(),
-              message: `This is a test log entry for resource ${data.resourceId}`
-            };
-            
-            // Save the dummy log
-            storageManager.appendCloudWatchLog(data.resourceId, dummyLog);
-            printer.log(`DEBUG: Dummy log entry created and saved for resource ${data.resourceId}`, LogLevel.INFO);
-            
-            // Send the dummy log to the client
-            socket.emit('resourceLogs', {
-              resourceId: data.resourceId,
-              logs: [dummyLog]
-            });
-            printer.log(`DEBUG: Emitted resourceLogs event with dummy log for resource ${data.resourceId}`, LogLevel.INFO);
-          }
         } catch (error) {
-          printer.log(`DEBUG: Error handling viewResourceLogs event for resource ${data.resourceId}: ${error}`, LogLevel.ERROR);
-          if (error instanceof Error) {
-            printer.log(`DEBUG: Error stack: ${error.stack}`, LogLevel.ERROR);
-          }
+          printer.log(`Error handling viewResourceLogs event: ${error}`, LogLevel.ERROR);
           
           // Notify client of error
           socket.emit('logStreamError', {
@@ -778,10 +716,11 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
       
       // Handle toggle resource logging request
       socket.on('toggleResourceLogging', async (data: { resourceId: string, resourceType: string, startLogging: boolean }) => {
-        printer.log(`DEBUG: toggleResourceLogging event received for ${data.resourceId}, startLogging=${data.startLogging}`, LogLevel.DEBUG);
+        printer.log(`Toggle logging for ${data.resourceId}, startLogging=${data.startLogging}`, LogLevel.DEBUG);
         
         if (data.startLogging) {
           // Start logging if not already active
+          // eslint-disable-next-line spellcheck/spell-checker
           if (!activeLogPollers.has(data.resourceId)) {
             try {
               // Create CloudWatch Logs client
@@ -803,6 +742,7 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
               } else if (data.resourceType === 'AWS::ApiGateway::RestApi') {
                 logGroupName = `API-Gateway-Execution-Logs_${data.resourceId}`;
               } else if (data.resourceType === 'AWS::AppSync::GraphQLApi') {
+                // eslint-disable-next-line spellcheck/spell-checker
                 logGroupName = `/aws/appsync/apis/${data.resourceId}`;
               } else {
                 socket.emit('logStreamError', {
@@ -890,8 +830,17 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
               // Store polling interval
               activeLogPollers.set(data.resourceId, pollingInterval);
               
+              // Save the logging state to local storage
+              storageManager.saveResourceLoggingState(data.resourceId, true);
+              
               // Notify client that logs are now being recorded
               socket.emit('logStreamStatus', {
+                resourceId: data.resourceId,
+                status: 'active'
+              });
+              
+              // Also broadcast to all clients to ensure UI is updated everywhere
+              io.emit('logStreamStatus', {
                 resourceId: data.resourceId,
                 status: 'active'
               });
@@ -918,26 +867,37 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
             clearInterval(pollingInterval);
             activeLogPollers.delete(data.resourceId);
             
+            // Save the logging state to local storage
+            printer.log(`DEBUG: Saving inactive logging state for resource ${data.resourceId}`, LogLevel.DEBUG);
+            storageManager.saveResourceLoggingState(data.resourceId, false);
+            
             // Notify client that logs are no longer being recorded
             socket.emit('logStreamStatus', {
               resourceId: data.resourceId,
               status: 'stopped'
             });
+            
+            // Also broadcast to all clients to ensure UI is updated everywhere
+            io.emit('logStreamStatus', {
+              resourceId: data.resourceId,
+              status: 'stopped'
+            });
+            
+            printer.log(`Stopped log polling for resource ${data.resourceId}`, LogLevel.INFO);
           } else {
             socket.emit('logStreamStatus', {
               resourceId: data.resourceId,
               status: 'not-active'
             });
+            printer.log(`No active log polling found for resource ${data.resourceId}`, LogLevel.INFO);
           }
         }
       });
       
       // Handle explicit sandbox status requests
       socket.on('getSandboxStatus', () => {
-        printer.log('getSandboxStatus event received', LogLevel.DEBUG);
         try {
           const status = getSandboxState();
-          printer.log(`Emitting sandbox status on request: ${status}`, LogLevel.DEBUG);
           
           socket.emit('sandboxStatus', { 
             status,
@@ -978,8 +938,6 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
       });
       
       // Send the current sandbox state to the client
-      printer.log(`Emitting initial sandbox status: ${sandboxState}`, LogLevel.DEBUG);
-      printer.log(`Sandbox identifier: ${backendId.name}`, LogLevel.DEBUG);
       socket.emit('sandboxStatus', { 
         status: sandboxState,
         identifier: backendId.name 
@@ -1114,7 +1072,7 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
       // Handle sandbox operations (start, stop, delete)
       socket.on('startSandboxWithOptions', async (options) => {
         try {
-          printer.log(`DEBUG: startSandboxWithOptions event received`, LogLevel.INFO);
+          printer.log(`startSandboxWithOptions event received`, LogLevel.INFO);
           
           if (sandboxState !== 'running') {
             printer.log('Starting sandbox with options...', LogLevel.INFO);
@@ -1168,12 +1126,12 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
               io.emit('log', {
                 timestamp: new Date().toISOString(),
                 level: 'SUCCESS',
-                message: 'Sandbox started successfully with the specified options'
+                message: 'Sandbox started successfully'
               });
               
-              printer.log('Sandbox started successfully with options', LogLevel.INFO);
+              printer.log('Sandbox started successfully', LogLevel.INFO);
             } catch (startError) {
-              printer.log(`DEBUG: Error in sandbox.start() with options: ${startError}`, LogLevel.ERROR);
+              printer.log(`Error in sandbox.start() with options: ${startError}`, LogLevel.ERROR);
               
               io.emit('log', {
                 timestamp: new Date().toISOString(),
@@ -1202,37 +1160,22 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
 
       socket.on('stopSandbox', async () => {
         try {
-          printer.log('DEBUG: stopSandbox event received from client', LogLevel.DEBUG);
-          
-          // Log the current sandbox state
-          printer.log(`DEBUG: Current sandbox state: ${sandboxState}`, LogLevel.DEBUG);
+          printer.log('stopSandbox event received from client', LogLevel.INFO);
           
           // Check if sandbox is running using getSandboxState()
           const runningSandboxStatus = getSandboxState();
-          printer.log(`DEBUG: getSandboxState() returned: ${runningSandboxStatus}`, LogLevel.DEBUG);
-          
-          // Log event listeners
-          printer.log(`DEBUG: Sandbox event listeners: successfulDeployment=${sandbox.listenerCount('successfulDeployment')}, failedDeployment=${sandbox.listenerCount('failedDeployment')}`, LogLevel.DEBUG);
           
           // Use the actual running status instead of sandboxState
           if (runningSandboxStatus === 'running') {
-            printer.log('Stopping sandbox...', LogLevel.DEBUG);
+            printer.log('Stopping sandbox...', LogLevel.INFO);
             
             try {
               await sandbox.stop();
-              printer.log('sandbox.stop() completed successfully', LogLevel.DEBUG);
-              
-              // State is updated by sandbox.stop() internally, but we'll get it again to be sure
-              const newState = getSandboxState();
-              printer.log(`After stop, isSandboxRunning() returned: ${newState}`, LogLevel.DEBUG);
-              
               // Notify all clients about the state change
-              printer.log(`DEBUG: Broadcasting sandboxStatus event with status '${sandboxState}' to all clients via io.emit`, LogLevel.DEBUG);
               io.emit('sandboxStatus', { 
-                status: sandboxState, // sandboxState was updated by isSandboxRunning()
+                status: getSandboxState(), 
                 identifier: backendId.name
               });
-              printer.log(`DEBUG: Emitted sandboxStatus event with status '${sandboxState}'`, LogLevel.DEBUG);
               
               printer.log('Sandbox stopped successfully', LogLevel.INFO);
             } catch (stopError) {
@@ -1244,7 +1187,7 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
             }
           } else {
             printer.log('Sandbox is not running', LogLevel.INFO);
-            printer.log(`DEBUG: Not calling sandbox.stop() because isSandboxRunning() returned '${runningSandboxStatus}'`, LogLevel.DEBUG);
+            printer.log(`Not calling sandbox.stop() because sandbox is not running`, LogLevel.INFO);
             io.emit('sandboxStatus', { 
               status: sandboxState,
               identifier: backendId.name
@@ -1257,65 +1200,20 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
           }
         }
       });
-      
-      // Handle delete confirmation request
-      socket.on('confirmDeleteSandbox', () => {
-        // Get the current state directly from the sandbox
-        const status = getSandboxState();
-        printer.log(`DEBUG: confirmDeleteSandbox - isSandboxRunning() returned: ${status}`, LogLevel.DEBUG);
-        
-        // Check if the sandbox exists based on its state
-        if (status === 'running' || status === 'stopped') {
-          // Ask for confirmation
-          printer.log('DEBUG: Sandbox exists, requesting confirmation for deletion', LogLevel.DEBUG);
-          socket.emit('confirmAction', {
-            action: 'deleteSandbox',
-            message: 'Are you sure you want to delete this sandbox? All resources will be removed and any data will be lost.',
-            title: 'Confirm Sandbox Deletion'
-          });
-        } else {
-          printer.log('DEBUG: Sandbox does not exist, no need for deletion', LogLevel.DEBUG);
-          socket.emit('actionResult', {
-            action: 'deleteSandbox',
-            success: false,
-            message: 'No sandbox exists to delete.'
-          });
-        }
-      });
-      
-      // Handle actual sandbox deletion after confirmation
-      socket.on('deleteSandbox', async (confirmed = false) => {
+      // Handle sandbox deletion (client-side confirmation is already handled)
+      socket.on('deleteSandbox', async () => {
         try {
-          printer.log('DEBUG: deleteSandbox event received', LogLevel.DEBUG);
-          printer.log(`DEBUG: Confirmation status: ${confirmed}`, LogLevel.DEBUG);
-          
-          // If not confirmed, request confirmation first
-          if (!confirmed) {
-            printer.log('DEBUG: Requesting confirmation for sandbox deletion', LogLevel.DEBUG);
-            socket.emit('confirmAction', {
-              action: 'deleteSandbox',
-              message: 'Are you sure you want to delete this sandbox? All resources will be removed and any data will be lost.',
-              title: 'Confirm Sandbox Deletion'
-            });
-            return;
-          }
-          
-          // Log the current sandbox state
-          printer.log(`DEBUG: Current sandbox state: ${sandboxState}`, LogLevel.DEBUG);
+          printer.log('deleteSandbox event received', LogLevel.INFO);
           
           // Check if sandbox is running using getSandboxState()
           const status = getSandboxState();
-          printer.log(`DEBUG: isSandboxRunning() returned: ${status}`, LogLevel.DEBUG);
-          
-          // Log event listeners
-          printer.log(`DEBUG: Sandbox event listeners: successfulDeployment=${sandbox.listenerCount('successfulDeployment')}, failedDeployment=${sandbox.listenerCount('failedDeployment')}`, LogLevel.DEBUG);
           
           // Since isSandboxRunning() returns 'running', 'stopped', or 'unknown',
           // we need to check if the sandbox exists differently
           if (status === 'running' || status === 'stopped') {
             printer.log('Deleting sandbox...', LogLevel.INFO);
             
-            printer.log('DEBUG: Updating sandbox status to deploying', LogLevel.DEBUG);
+            // Update sandbox status to deploying
             io.emit('sandboxStatus', { 
               status: 'deploying',
               identifier: backendId.name
@@ -1324,31 +1222,23 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
             // Clear any existing deployment state
             deploymentInProgress = false;
             recentDeploymentMessages.clear();
-            printer.log('DEBUG: Cleared deployment state', LogLevel.DEBUG);
             
             // Emit deployment starting event
             io.emit('deploymentInProgress', {
               message: 'Starting sandbox deletion...',
               timestamp: new Date().toISOString()
             });
-            printer.log('DEBUG: Emitted deploymentInProgress event', LogLevel.DEBUG);
             
             try {
               if (status === 'running') {
-                printer.log('DEBUG: Sandbox is running, stopping it first', LogLevel.DEBUG);
+                printer.log('Sandbox is running, stopping it first', LogLevel.INFO);
                 await sandbox.stop();
-                printer.log('DEBUG: sandbox.stop() completed successfully', LogLevel.DEBUG);
-              } else {
-                printer.log('DEBUG: Sandbox is not running, proceeding with deletion', LogLevel.DEBUG);
               }
               
-              printer.log('DEBUG: Calling sandbox.delete()', LogLevel.DEBUG);
               await sandbox.delete({ identifier: backendId.name });
-              printer.log('DEBUG: sandbox.delete() completed successfully', LogLevel.DEBUG);
               
               // Update sandbox state
               sandboxState = 'nonexistent';
-              printer.log(`DEBUG: Updated sandboxState to '${sandboxState}'`, LogLevel.DEBUG);
               
               // Emit sandbox status update with deployment completion info
               const statusData = { 
@@ -1358,19 +1248,8 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
                 timestamp: new Date().toISOString()
               };
               
-              // Log the data being sent
-              printer.log(`DEBUG: About to emit sandboxStatus event with data: ${JSON.stringify(statusData)}`, LogLevel.DEBUG);
-              
               // Emit to all connected clients
               io.emit('sandboxStatus', statusData);
-              
-              // Also emit to each socket individually to ensure delivery
-              io.sockets.sockets.forEach((socket) => {
-                printer.log(`DEBUG: Emitting sandboxStatus directly to socket ${socket.id}`, LogLevel.DEBUG);
-                socket.emit('sandboxStatus', statusData);
-              });
-              
-              printer.log('DEBUG: Emitted sandboxStatus event with status nonexistent and deploymentCompleted flag', LogLevel.DEBUG);
               
               printer.log('Sandbox deleted successfully', LogLevel.INFO);
             } catch (deleteError) {
@@ -1382,7 +1261,7 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
             }
           } else {
             printer.log('Sandbox does not exist', LogLevel.INFO);
-            printer.log('DEBUG: Not calling sandbox.delete() because sandbox does not exist', LogLevel.DEBUG);
+            printer.log('Not calling sandbox.delete() because sandbox does not exist', LogLevel.INFO);
             io.emit('sandboxStatus', { 
               status: 'nonexistent'
             });
@@ -1394,6 +1273,48 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
           }
         }
       });
+
+      // Handle stopDevTools event from client
+      socket.on('stopDevTools', async () => {
+        printer.print(`${EOL}Stopping the devtools server by client request.`);
+        
+        // Check if sandbox is running and stop it
+        const status = getSandboxState();
+        printer.log(`stopDevTools handler - checking sandbox status`, LogLevel.INFO);
+        
+        if (status === 'running') {
+          printer.log('Stopping sandbox before exiting...', LogLevel.INFO);
+          try {
+            printer.log('Stopping sandbox from stopDevTools handler', LogLevel.INFO);
+            await sandbox.stop();
+            printer.log('Sandbox stopped successfully', LogLevel.INFO);
+          } catch (error) {
+            printer.log(`Error stopping sandbox: ${error}`, LogLevel.ERROR);
+            if (error instanceof Error && error.stack) {
+              printer.log(`DEBUG: Error stack: ${error.stack}`, LogLevel.DEBUG);
+            }
+          }
+        }
+        
+        // Clear all stored resources when devtools ends
+        storageManager.clearAll();
+        
+        // Notify clients that the server is shutting down
+        io.emit('log', {
+          timestamp: new Date().toISOString(),
+          level: 'INFO',
+          message: 'DevTools server is shutting down by user request...'
+        });
+        
+        // Close socket and server connections
+        io.close();
+        server.close();
+        
+        // Exit the process after a short delay to allow the message to be sent
+        setTimeout(() => {
+          process.exit(0);
+        }, 500);
+      });
     });
 
     // Keep the process running until Ctrl+C
@@ -1402,12 +1323,12 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
       
       // Check if sandbox is running and stop it
       const status = getSandboxState();
-      printer.log(`DEBUG: SIGINT handler - isSandboxRunning() returned: ${status}`, LogLevel.DEBUG);
+      printer.log(`SIGINT handler - checking sandbox status`, LogLevel.INFO);
       
       if (status === 'running') {
         printer.log('Stopping sandbox before exiting...', LogLevel.INFO);
         try {
-          printer.log('DEBUG: Calling sandbox.stop() from SIGINT handler', LogLevel.DEBUG);
+          printer.log('Stopping sandbox from SIGINT handler', LogLevel.INFO);
           await sandbox.stop();
           printer.log('Sandbox stopped successfully', LogLevel.INFO);
         } catch (error) {
@@ -1419,9 +1340,8 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
       }
       
       // Clear all stored resources when devtools ends
-      printer.log('Clearing stored resources...', LogLevel.DEBUG);
+      // Clear all stored resources when devtools ends
       storageManager.clearAll();
-      printer.log('Stored resources cleared', LogLevel.DEBUG);
       
       // Close socket and server connections
       io.close();
@@ -1434,12 +1354,12 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
       
       // Check if sandbox is running and stop it
       const status = getSandboxState();
-      printer.log(`DEBUG: SIGTERM handler - isSandboxRunning() returned: ${status}`, LogLevel.DEBUG);
+      printer.log(`SIGTERM handler - checking sandbox status`, LogLevel.INFO);
       
       if (status === 'running') {
         printer.log('Stopping sandbox before exiting...', LogLevel.INFO);
         try {
-          printer.log('DEBUG: Calling sandbox.stop() from SIGTERM handler', LogLevel.DEBUG);
+          printer.log('Stopping sandbox from SIGTERM handler', LogLevel.INFO);
           await sandbox.stop();
           printer.log('Sandbox stopped successfully', LogLevel.INFO);
         } catch (error) {
@@ -1451,9 +1371,8 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
       }
       
       // Clear all stored resources when devtools ends
-      printer.log('Clearing stored resources...', LogLevel.DEBUG);
+      // Clear all stored resources when devtools ends
       storageManager.clearAll();
-      printer.log('Stored resources cleared', LogLevel.DEBUG);
       
       // Close socket and server connections
       io.close();

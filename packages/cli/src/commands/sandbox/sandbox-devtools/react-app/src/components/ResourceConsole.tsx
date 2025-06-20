@@ -40,8 +40,6 @@ type ColumnDefinition = {
 
 const ResourceConsole: React.FC<ResourceConsoleProps> = ({ socket, sandboxStatus = 'unknown' }) => {
   const [lastRefreshTime, setLastRefreshTime] = useState<number>(0);
-  const [deploymentMessage, setDeploymentMessage] = useState<string>('');
-  // Use sandboxStatus prop to determine if deployment is in progress
   const deploymentInProgress = sandboxStatus === 'deploying';
   const [initializing, setInitializing] = useState<boolean>(true);
   const [activeLogStreams, setActiveLogStreams] = useState<string[]>([]);
@@ -213,41 +211,12 @@ const ResourceConsole: React.FC<ResourceConsoleProps> = ({ socket, sandboxStatus
   useEffect(() => {
     if (!socket) return;
     
-    const handleDeploymentInProgress = (data: { message: string }) => {
-      console.log('ResourceConsole: Deployment in progress:', data.message);
-      setDeploymentMessage(data.message);
-    };
+  //   const handleDeploymentInProgress = (data: { message: string }) => {
+  //     console.log('ResourceConsole: Deployment in progress:', data.message);
+  //     setDeploymentMessage(data.message);
+  //   };
     
-    socket.on('deploymentInProgress', handleDeploymentInProgress);
-    
-    // Reset deployment message when resources are updated
-    // const handleResourcesUpdated = () => {
-    //   console.log('ResourceConsole: Resources updated, clearing deployment message');
-    //   setDeploymentMessage('');
-    // };
-    
-    // Handle sandbox status updates
-    // const handleSandboxStatus = (data: { 
-    //   status: string, 
-    //   deploymentCompleted?: boolean,
-    //   message?: string
-    // }) => {
-    //   // If this is a deployment completion event, refresh resources
-    //   if (data.deploymentCompleted) {
-    //     console.log('ResourceConsole: Deployment completed via sandboxStatus, refreshing resources');
-    //     setDeploymentMessage('');
-    //     originalRefreshResources();
-    //   }
-      
-    //   // Update UI based on status
-    //   if (data.status === 'deploying') {
-    //     setDeploymentMessage('Sandbox is being deployed...');
-    //   } else if (data.status === 'running') {
-    //     // Clear deployment message when status changes to running
-    //     setDeploymentMessage('');
-    //   }
-    // };
-    
+    // socket.on('deploymentInProgress', handleDeploymentInProgress);
     
     // Get active log streams on initial load
     socket.emit('getActiveLogStreams');
@@ -299,21 +268,22 @@ const ResourceConsole: React.FC<ResourceConsoleProps> = ({ socket, sandboxStatus
     socket.on('logStreamError', handleLogStreamError);
     
     return () => {
+      // socket.off('deploymentInProgress', handleDeploymentInProgress);
       socket.off('activeLogStreams', handleActiveLogStreams);
       socket.off('logStreamStatus', handleLogStreamStatus);
       socket.off('logStreamError', handleLogStreamError);
     };
   }, [socket, selectedLogResource]);
   
-  // Update deployment message when sandbox status changes
-  useEffect(() => {
-    if (sandboxStatus === 'deploying') {
-      setDeploymentMessage('Sandbox is being deployed...');
-    } else if (sandboxStatus === 'running') {
-      // Always clear deployment message when status changes to running
-      setDeploymentMessage('');
-    }
-  }, [sandboxStatus]);
+  // // Update deployment message when sandbox status changes
+  // useEffect(() => {
+  //   if (sandboxStatus === 'deploying') {
+  //     setDeploymentMessage('Sandbox is being deployed...');
+  //   } else if (sandboxStatus === 'running') {
+  //     // Always clear deployment message when status changes to running
+  //     setDeploymentMessage('');
+  //   }
+  // }, [sandboxStatus]);
   
   const refreshResources = React.useCallback(() => {
     const now = Date.now();
@@ -343,7 +313,7 @@ const ResourceConsole: React.FC<ResourceConsoleProps> = ({ socket, sandboxStatus
     });
     
     return Array.from(types).map(type => ({ label: type, value: type }));
-  }, [resources]);
+  }, [resources, sandboxStatus]);
 
   const statusOptions = useMemo(() => {
     if (!resources?.resources) return [];
@@ -513,7 +483,6 @@ const ResourceConsole: React.FC<ResourceConsoleProps> = ({ socket, sandboxStatus
             <StatusIndicator type="in-progress">Sandbox is deploying</StatusIndicator>
             <TextContent>
               <p>The sandbox is currently being deployed. This may take a few minutes.</p>
-              {deploymentMessage && <p>{deploymentMessage}</p>}
               {resources && resources.resources && resources.resources.length > 0 && (
                 <p>Showing resources from the previous deployment.</p>
               )}
@@ -564,6 +533,7 @@ const ResourceConsole: React.FC<ResourceConsoleProps> = ({ socket, sandboxStatus
     );
   }
   
+  // Main render with split-screen layout
   return (
     <Container
       disableContentPaddings={false}
@@ -581,99 +551,97 @@ const ResourceConsole: React.FC<ResourceConsoleProps> = ({ socket, sandboxStatus
         >
           Deployed Resources
         </Header>
-{/*         
-        {deploymentInProgress && (
-          <Alert type="info" header="Deployment in progress">
-            {deploymentMessage || 'Sandbox deployment is in progress. Resources will update when deployment completes.'}
-          </Alert>
-        )}
-         */}
+        
         {!regionAvailable && (
           <StatusIndicator type="warning">
             AWS region could not be detected. Console links are unavailable.
           </StatusIndicator>
         )}
 
-        <Grid gridDefinition={[{ colspan: 12 }]}>
-          <SpaceBetween direction="vertical" size="s">
-            <FormField label="Search resources">
-              <Input
-                value={searchQuery}
-                onChange={({ detail }) => setSearchQuery(detail.value)}
-                placeholder="Search by ID, type, or status..."
-              />
-            </FormField>
-            
-            <Grid gridDefinition={[{ colspan: 6 }, { colspan: 6 }]}>
-              <FormField label="Filter by service type">
-                <Multiselect
-                  selectedOptions={selectedServiceTypes}
-                  onChange={({ detail }) => setSelectedServiceTypes(detail.selectedOptions)}
-                  options={serviceTypeOptions}
-                  placeholder="Select service types"
-                  filteringType="auto"
+        {/* Split view layout - show resources on left and logs on right when a log is being viewed */}
+        <Grid gridDefinition={showLogViewer ? [{ colspan: 6 }, { colspan: 6 }] : [{ colspan: 12 }]}>
+          {/* Left side - Resources */}
+          <div>
+            <SpaceBetween direction="vertical" size="s">
+              <FormField label="Search resources">
+                <Input
+                  value={searchQuery}
+                  onChange={({ detail }) => setSearchQuery(detail.value)}
+                  placeholder="Search by ID, type, or status..."
                 />
               </FormField>
               
-              <FormField label="Filter by deployment status">
-                <Multiselect
-                  selectedOptions={selectedStatuses}
-                  onChange={({ detail }) => setSelectedStatuses(detail.selectedOptions)}
-                  options={statusOptions}
-                  placeholder="Select statuses"
-                  filteringType="auto"
-                />
-              </FormField>
-            </Grid>
-          </SpaceBetween>
-        </Grid>
-        
-        {Object.entries(groupedResources).map(([serviceName, resourceTypes]) => (
-          <ExpandableSection 
-            key={serviceName} 
-            headerText={serviceName}
-            defaultExpanded
-          >
-            <SpaceBetween direction="vertical" size="s">
-              {Object.entries(resourceTypes).map(([resourceType, resources]) => (
-                <ExpandableSection 
-                  key={`${serviceName}-${resourceType}`} 
-                  headerText={resourceType}
-                  variant="container"
-                >
-                  <Table
-                    columnDefinitions={columnDefinitions}
-                    items={resources}
-                    loadingText="Loading resources"
-                    trackBy="logicalResourceId"
-                    empty={emptyState}
-                    resizableColumns
-                    stickyHeader
-                    wrapLines
+              <Grid gridDefinition={[{ colspan: 6 }, { colspan: 6 }]}>
+                <FormField label="Filter by service type">
+                  <Multiselect
+                    selectedOptions={selectedServiceTypes}
+                    onChange={({ detail }) => setSelectedServiceTypes(detail.selectedOptions)}
+                    options={serviceTypeOptions}
+                    placeholder="Select service types"
+                    filteringType="auto"
                   />
-                </ExpandableSection>
-              ))}
+                </FormField>
+                
+                <FormField label="Filter by deployment status">
+                  <Multiselect
+                    selectedOptions={selectedStatuses}
+                    onChange={({ detail }) => setSelectedStatuses(detail.selectedOptions)}
+                    options={statusOptions}
+                    placeholder="Select statuses"
+                    filteringType="auto"
+                  />
+                </FormField>
+              </Grid>
             </SpaceBetween>
-          </ExpandableSection>
-        ))}
+            
+            {Object.entries(groupedResources).map(([serviceName, resourceTypes]) => (
+              <ExpandableSection 
+                key={serviceName} 
+                headerText={serviceName}
+                defaultExpanded
+              >
+                <SpaceBetween direction="vertical" size="s">
+                  {Object.entries(resourceTypes).map(([resourceType, resources]) => (
+                    <ExpandableSection 
+                      key={`${serviceName}-${resourceType}`} 
+                      headerText={resourceType}
+                      variant="container"
+                    >
+                      <Table
+                        columnDefinitions={columnDefinitions}
+                        items={resources}
+                        loadingText="Loading resources"
+                        trackBy="logicalResourceId"
+                        empty={emptyState}
+                        resizableColumns
+                        stickyHeader
+                        wrapLines
+                      />
+                    </ExpandableSection>
+                  ))}
+                </SpaceBetween>
+              </ExpandableSection>
+            ))}
+          </div>
+          
+          {/* Right side - Log Viewer */}
+          {showLogViewer && selectedLogResource && (
+            <ResourceLogPanel
+              resourceId={selectedLogResource.physicalResourceId}
+              resourceName={selectedLogResource.friendlyName || selectedLogResource.logicalResourceId}
+              resourceType={selectedLogResource.resourceType}
+              onClose={() => {
+                setShowLogViewer(false);
+                // Request updated active log streams when closing the panel
+                if (socket) {
+                  socket.emit('getActiveLogStreams');
+                }
+              }}
+              socket={socket}
+            />
+          )}
+        </Grid>
       </SpaceBetween>
-      
-      {/* Log Viewer Modal */}
-      {showLogViewer && selectedLogResource && (
-        <ResourceLogPanel
-          resourceId={selectedLogResource.physicalResourceId}
-          resourceName={selectedLogResource.friendlyName || selectedLogResource.logicalResourceId}
-          resourceType={selectedLogResource.resourceType}
-          onClose={() => {
-            setShowLogViewer(false);
-            // Request updated active log streams when closing the panel
-            if (socket) {
-              socket.emit('getActiveLogStreams');
-            }
-          }}
-          socket={socket}
-        />
-      )}
     </Container>
   );
 };

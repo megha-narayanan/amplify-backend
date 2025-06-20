@@ -16,9 +16,10 @@ interface HeaderProps {
   onStartSandbox: () => void;
   onStopSandbox: () => void;
   onDeleteSandbox?: () => void;
+  onStopDevTools?: () => void;
 }
 
-const Header = ({ connected, onClear, sandboxStatus, sandboxIdentifier, onStartSandbox, onStopSandbox, onDeleteSandbox }: HeaderProps) => {
+const Header = ({ connected, onClear, sandboxStatus, sandboxIdentifier, onStartSandbox, onStopSandbox, onDeleteSandbox, onStopDevTools }: HeaderProps) => {
   const [isLoading, setIsLoading] = useState(false);
   const [statusCheckTimeout, setStatusCheckTimeout] = useState<number>(0);
 
@@ -57,6 +58,12 @@ const Header = ({ connected, onClear, sandboxStatus, sandboxIdentifier, onStartS
     if (window.confirm('Are you sure you want to delete the sandbox? This will remove all resources and cannot be undone.')) {
       setIsLoading(true);
       onDeleteSandbox?.();
+    }
+  };
+
+  const handleStopDevTools = () => {
+    if (window.confirm('Are you sure you want to stop the DevTools process? This will close the DevTools interface.')) {
+      onStopDevTools?.();
     }
   };
 
@@ -141,6 +148,16 @@ const Header = ({ connected, onClear, sandboxStatus, sandboxIdentifier, onStartS
             </Button>
           )}
           <Button onClick={onClear} iconName="remove">Clear Logs</Button>
+          {onStopDevTools && (
+            <Button 
+              onClick={handleStopDevTools} 
+              iconName="status-stopped"
+              variant="link"
+              disabled={!connected}
+            >
+              Stop DevTools
+            </Button>
+          )}
         </SpaceBetween>
       }
     >

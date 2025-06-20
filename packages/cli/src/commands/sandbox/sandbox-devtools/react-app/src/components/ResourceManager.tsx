@@ -99,21 +99,7 @@ export const useResourceManager = (
       setLoading(false);
     });
 
-    // Listen for sandbox status changes
-    socket.on('sandboxStatus', (data: { 
-      status: 'running' | 'stopped' | 'nonexistent' | 'unknown' | 'deploying',
-      deploymentCompleted?: boolean
-    }) => {
-      console.log(`ResourceManager: Sandbox status changed to ${data.status}`);
-      
-      // If deployment completed or status is running, refresh resources
-      if (data.deploymentCompleted || data.status === 'running') {
-        console.log('ResourceManager: Status change requires resource refresh');
-        if (data.status !== 'stopped') {
-          refreshResources();
-        }
-      }
-    });
+    // ResourceManager now gets sandbox status as a prop, no need to listen for sandboxStatus events
 
     // Listen for resource configuration changes to refresh resources
     socket.on('resourceConfigChanged', () => {
@@ -128,7 +114,6 @@ export const useResourceManager = (
       socket.off('connect', handleConnect);
       socket.off('deployedBackendResources');
       socket.off('resourceConfigChanged');
-      socket.off('sandboxStatus');
       socket.off('error');
     };
   }, [socket, onResourcesLoaded, sandboxStatus]);

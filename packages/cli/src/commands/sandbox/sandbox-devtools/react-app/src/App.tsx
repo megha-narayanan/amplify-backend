@@ -59,6 +59,13 @@ function App() {
   
   // Determine if deployment is in progress based on sandbox status
   const deploymentInProgress = sandboxStatus === 'deploying';
+  
+  // Add debugging for state changes
+  useEffect(() => {
+    console.log(`[CLIENT] App: sandboxStatus state changed to: ${sandboxStatus}`);
+    console.log(`[CLIENT] App: deploymentInProgress is now: ${deploymentInProgress}`);
+    console.log(`[CLIENT] App: Component will re-render with new status`);
+  }, [sandboxStatus, deploymentInProgress]);
 
   useEffect(() => {
     // Connect to Socket.IO server using the current hostname and port
@@ -70,6 +77,71 @@ function App() {
       timeout: 10000
     });
     socketRef.current = socket;
+
+    socket.on('sandboxStatus', (data: SandboxStatusData) => {
+      console.log(`[CLIENT] Status update received: ${data.status}`, data);
+      
+      // Force state update with functional update to avoid stale closures
+      setSandboxStatus(prevStatus => {
+        console.log(`[CLIENT] Updating sandboxStatus from ${prevStatus} to ${data.status}`);
+        return data.status;
+      });
+      
+      // Update the sandbox identifier if provided
+      if (data.identifier) {
+        setSandboxIdentifier(prevId => {
+          console.log(`[CLIENT] Updating sandboxIdentifier from ${prevId} to ${data.identifier}`);
+          return data.identifier;
+        });
+      } else if (data.status === 'nonexistent') {
+        // Clear identifier for nonexistent sandbox
+        setSandboxIdentifier(prevId => {
+          console.log(`[CLIENT] Clearing sandboxIdentifier from ${prevId}`);
+          return undefined;
+        });
+      }
+      
+      // Handle deployment completion information
+      if (data.deploymentCompleted) {
+        console.log('[CLIENT] Deployment completed event received via sandboxStatus:', data);
+        
+        // Add deployment completion log
+        setLogs(prev => [...prev, {
+          id: Date.now().toString(),
+          timestamp: data.timestamp || new Date().toISOString(),
+          level: data.error ? 'ERROR' : 'SUCCESS',
+          message: data.message || (data.error ? 'Deployment failed' : 'Deployment completed successfully')
+        }]);
+      }
+      
+      if (data.error) {
+        setStatusError(data.error);
+        setLogs(prev => [...prev, {
+          id: Date.now().toString(),
+          timestamp: new Date().toISOString(),
+          level: 'ERROR',
+          message: `Sandbox error: ${data.error}`
+        }]);
+      } else {
+        setStatusError(null);
+        
+        // Only add a general status log if this isn't a deployment completion event
+        // to avoid duplicate logs
+        if (!data.deploymentCompleted) {
+          setLogs(prev => [...prev, {
+            id: Date.now().toString(),
+            timestamp: new Date().toISOString(),
+            level: 'INFO',
+            message: data.identifier 
+              ? `Sandbox status: ${data.status} (identifier: ${data.identifier})`
+              : `Sandbox status: ${data.status}`
+          }]);
+        }
+      }
+      
+      // Force a re-render by updating a dummy state
+      setLogs(prev => [...prev]);
+    });
 
     // Handle connection events
     socket.on('connect', () => {
@@ -98,6 +170,9 @@ function App() {
           message: 'DevTools reconnected to Amplify Sandbox'
         }]);
       }
+      
+      // Request saved deployment progress
+      socket.emit('getSavedDeploymentProgress');
     });
 
     // Handle connection errors
@@ -151,68 +226,7 @@ socket.on('reconnect_failed', () => {
         message: data.message
       }]);
     });
-  // Request saved deployment progress when connected
-  socket.on('connect', () => {
-    // Request saved deployment progress
-    socket.emit('getSavedDeploymentProgress');
-  });
 
-    // Handle sandbox status updates
-    socket.on('sandboxStatus', (data: SandboxStatusData) => {
-      console.log(`[CLIENT] Status update received: ${data.status}`, data);
-      
-      // Update the status
-      setSandboxStatus(data.status);
-      
-      // Status is already updated by setSandboxStatus(data.status) above
-      console.log(`[CLIENT] Sandbox status updated to: ${data.status}`);
-      
-      // Update the sandbox identifier if provided
-      if (data.identifier) {
-        setSandboxIdentifier(data.identifier);
-      } else if (data.status === 'nonexistent') {
-        // Clear identifier for nonexistent sandbox
-        setSandboxIdentifier(undefined);
-      }
-      
-      // Handle deployment completion information
-      if (data.deploymentCompleted) {
-        console.log('[CLIENT] Deployment completed event received via sandboxStatus:', data);
-        
-        // Add deployment completion log
-        setLogs(prev => [...prev, {
-          id: Date.now().toString(),
-          timestamp: data.timestamp || new Date().toISOString(),
-          level: data.error ? 'ERROR' : 'SUCCESS',
-          message: data.message || (data.error ? 'Deployment failed' : 'Deployment completed successfully')
-        }]);
-      }
-      
-      if (data.error) {
-        setStatusError(data.error);
-        setLogs(prev => [...prev, {
-          id: Date.now().toString(),
-          timestamp: new Date().toISOString(),
-          level: 'ERROR',
-          message: `Sandbox error: ${data.error}`
-        }]);
-      } else {
-        setStatusError(null);
-        
-        // Only add a general status log if this isn't a deployment completion event
-        // to avoid duplicate logs
-        if (!data.deploymentCompleted) {
-          setLogs(prev => [...prev, {
-            id: Date.now().toString(),
-            timestamp: new Date().toISOString(),
-            level: 'INFO',
-            message: data.identifier 
-              ? `Sandbox status: ${data.status} (identifier: ${data.identifier})`
-              : `Sandbox status: ${data.status}`
-          }]);
-        }
-      }
-    });
 
     // Handle disconnection
     socket.on('disconnect', (reason) => {
@@ -345,6 +359,18 @@ socket.on('reconnect_failed', () => {
     }
   };
 
+  const stopDevTools = () => {
+    if (socketRef.current) {
+      socketRef.current.emit('stopDevTools');
+      setLogs(prev => [...prev, {
+        id: Date.now().toString(),
+        timestamp: new Date().toISOString(),
+        level: 'INFO',
+        message: 'Stopping DevTools process...'
+      }]);
+    }
+  };
+
   const mainContent = (
     <ContentLayout
       header={
@@ -356,6 +382,7 @@ socket.on('reconnect_failed', () => {
           onStartSandbox={startSandbox}
           onStopSandbox={stopSandbox}
           onDeleteSandbox={deleteSandbox}
+          onStopDevTools={stopDevTools}
         />
       }
     >
@@ -391,7 +418,7 @@ socket.on('reconnect_failed', () => {
               label: 'Console Logs',
               content: (
                 <SpaceBetween size="l">
-                  <DeploymentProgress socket={socketRef.current} visible={deploymentInProgress} />
+                  <DeploymentProgress socket={socketRef.current} visible={true} status={sandboxStatus} />
                   <ConsoleViewer logs={filteredLogs} />
                 </SpaceBetween>
               )

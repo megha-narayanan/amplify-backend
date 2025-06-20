@@ -387,7 +387,7 @@ export class FileWatchingSandbox extends EventEmitter implements Sandbox {
         };
         setSpanAttributes(span, data);
         span.end();
-        this.printer.log('[Sandbox] Deployment successful', LogLevel.INFO);
+        
         
         // Set state based on watchForChanges option
         if (options.watchForChanges === false) {
@@ -401,6 +401,7 @@ export class FileWatchingSandbox extends EventEmitter implements Sandbox {
         }
         
         this.emit('successfulDeployment', deployResult);
+        this.printer.log('[Sandbox] Deployment successful', LogLevel.INFO);
       } catch (error) {
         const amplifyError = AmplifyError.isAmplifyError(error)
           ? error

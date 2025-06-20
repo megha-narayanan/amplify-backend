@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Socket } from 'socket.io-client';
 import {
-  Box,
   Button,
   SpaceBetween,
   StatusIndicator,
@@ -9,7 +8,7 @@ import {
   Input,
   FormField,
   Header,
-  Modal
+  Container
 } from '@cloudscape-design/components';
 
 interface LogEntry {
@@ -40,33 +39,29 @@ const ResourceLogPanel: React.FC<ResourceLogPanelProps> = ({
 
   useEffect(() => {
     if (!socket) return;
-
-    console.log(`[CLIENT] ResourceLogPanel: Initializing for resource ${resourceId}`);
+    
     
     // Request saved logs when panel opens
     socket.emit('viewResourceLogs', { resourceId });
 
-    // Check if this resource is already being logged
     socket.emit('getActiveLogStreams');
 
-    // Listen for log stream status updates
     const handleLogStreamStatus = (data: { resourceId: string; status: string; }) => {
       if (data.resourceId === resourceId) {
-        console.log(`[CLIENT] ResourceLogPanel: Log stream status update for ${resourceId}: ${data.status}`);
         setIsRecording(data.status === 'active' || data.status === 'already-active');
       }
     };
 
     // Listen for active log streams
     const handleActiveLogStreams = (streams: string[]) => {
-      console.log(`[CLIENT] ResourceLogPanel: Active log streams: ${streams.join(', ')}`);
+      // Update recording state based on active streams
       setIsRecording(streams.includes(resourceId));
     };
 
     // Listen for log entries
     const handleResourceLogs = (data: { resourceId: string; logs: LogEntry[]; }) => {
       if (data.resourceId === resourceId) {
-        console.log(`[CLIENT] ResourceLogPanel: Received ${data.logs.length} new log entries for ${resourceId}`);
+        // Add new logs to the existing logs
         setLogs(prevLogs => [...prevLogs, ...data.logs]);
       }
     };
@@ -74,7 +69,7 @@ const ResourceLogPanel: React.FC<ResourceLogPanelProps> = ({
     // Listen for saved logs
     const handleSavedResourceLogs = (data: { resourceId: string; logs: LogEntry[]; }) => {
       if (data.resourceId === resourceId) {
-        console.log(`[CLIENT] ResourceLogPanel: Loaded ${data.logs.length} saved log entries for ${resourceId}`);
+        // Set logs from saved logs
         setLogs(data.logs);
       }
     };
@@ -82,7 +77,6 @@ const ResourceLogPanel: React.FC<ResourceLogPanelProps> = ({
     // Listen for errors
     const handleLogStreamError = (data: { resourceId: string; error: string; }) => {
       if (data.resourceId === resourceId) {
-        console.error(`[CLIENT] ResourceLogPanel: Error for ${resourceId}: ${data.error}`);
         setError(data.error);
       }
     };
@@ -94,7 +88,6 @@ const ResourceLogPanel: React.FC<ResourceLogPanelProps> = ({
     socket.on('logStreamError', handleLogStreamError);
 
     return () => {
-      console.log(`[CLIENT] ResourceLogPanel: Cleaning up for resource ${resourceId}`);
       // Clean up event listeners
       socket.off('logStreamStatus', handleLogStreamStatus);
       socket.off('activeLogStreams', handleActiveLogStreams);
@@ -126,12 +119,9 @@ const ResourceLogPanel: React.FC<ResourceLogPanelProps> = ({
     log.message.toLowerCase().includes(searchQuery.toLowerCase()) ||
     formatTimestamp(log.timestamp).toLowerCase().includes(searchQuery.toLowerCase())
   );
-
-  // Toggle recording
   const toggleRecording = () => {
     if (!socket) return;
     
-    console.log(`[CLIENT] ResourceLogPanel: Toggling recording for ${resourceId} to ${!isRecording}`);
     socket.emit('toggleResourceLogging', {
       resourceId,
       resourceType,
@@ -145,10 +135,7 @@ const ResourceLogPanel: React.FC<ResourceLogPanelProps> = ({
   };
 
   return (
-    <Modal
-      visible={true}
-      onDismiss={onClose}
-      size="large"
+    <Container
       header={
         <Header
           variant="h2"
@@ -160,19 +147,17 @@ const ResourceLogPanel: React.FC<ResourceLogPanelProps> = ({
               >
                 {isRecording ? "Stop Recording" : "Start Recording"}
               </Button>
+              <Button onClick={onClose} variant="link">
+                Close
+              </Button>
             </SpaceBetween>
           }
         >
           {resourceName} Logs
         </Header>
       }
-      footer={
-        <Box float="right">
-          <Button onClick={onClose} variant="primary">
-            Close
-          </Button>
-        </Box>
-      }
+      disableContentPaddings={false}
+      fitHeight
     >
       <SpaceBetween direction="vertical" size="m">
         {isRecording ? (
@@ -195,7 +180,7 @@ const ResourceLogPanel: React.FC<ResourceLogPanelProps> = ({
         <div
           ref={logContainerRef}
           style={{
-            height: '60vh',
+            flex: 1,
             overflowY: 'auto',
             fontFamily: 'monospace',
             whiteSpace: 'pre-wrap',
@@ -203,7 +188,8 @@ const ResourceLogPanel: React.FC<ResourceLogPanelProps> = ({
             backgroundColor: '#000',
             color: '#fff',
             padding: '10px',
-            borderRadius: '4px'
+            borderRadius: '4px',
+            minHeight: '300px'
           }}
         >
           {filteredLogs.length === 0 ? (
@@ -225,7 +211,7 @@ const ResourceLogPanel: React.FC<ResourceLogPanelProps> = ({
           <p>{filteredLogs.length} log entries {searchQuery && `(filtered from ${logs.length})`}</p>
         </TextContent>
       </SpaceBetween>
-    </Modal>
+    </Container>
   );
 };
 
