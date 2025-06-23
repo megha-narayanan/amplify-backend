@@ -15,9 +15,14 @@ import { DeployedBackendClientFactory } from '@aws-amplify/deployed-backend-clie
 import { S3Client } from '@aws-sdk/client-s3';
 import { AmplifyClient } from '@aws-sdk/client-amplify';
 import { CloudFormationClient } from '@aws-sdk/client-cloudformation';
-import { CloudWatchLogsClient, DescribeLogStreamsCommand, GetLogEventsCommand } from '@aws-sdk/client-cloudwatch-logs';
+import { CloudWatchLogsClient, DescribeLogStreamsCommand, GetLogEventsCommand, PutSubscriptionFilterCommand, DeleteSubscriptionFilterCommand } from '@aws-sdk/client-cloudwatch-logs';
+import { LambdaClient, CreateFunctionCommand, AddPermissionCommand, GetFunctionCommand } from '@aws-sdk/client-lambda';
+import { IAMClient, CreateRoleCommand, PutRolePolicyCommand, GetRoleCommand } from '@aws-sdk/client-iam';
 import { EOL } from 'os';
 import { LocalStorageManager } from './local_storage_manager.js';
+import { WebSocketServer } from 'ws';
+import { networkInterfaces } from 'os';
+import { randomUUID } from 'crypto';
  
 // Interface for resource with friendly name
 export type ResourceWithFriendlyName = {
@@ -162,52 +167,6 @@ function isDeploymentProgressMessage(message: string): boolean {
 }
 
 /**
- * Check if a message is a CDK deployment log that should be filtered from console
- * @param message The message to check
- * @returns True if the message should be filtered
- * @internal
- */
-function shouldFilterFromConsole(message: string): boolean {
-  const cleanedMessage = cleanAnsiCodes(message);
-  
-  // Filter CDK toolkit messages about stack status
-  if (cleanedMessage.includes('[deploy: CDK_TOOLKIT_')) {
-    return true;
-  }
-  
-  // Filter AWS SDK calls
-  if (cleanedMessage.includes('AWS SDK Call')) {
-    return true;
-  }
-  
-  // Filter stack progress messages
-  if (cleanedMessage.includes('has an ongoing operation in progress and is not stable')) {
-    return true;
-  }
-  
-  // Filter detailed deployment progress messages with JSON
-  if (cleanedMessage.includes('"deployment":') && 
-      cleanedMessage.includes('"event":') && 
-      cleanedMessage.includes('"progress":')) {
-    return true;
-  }
-  
-  // Filter stack completion messages
-  if (cleanedMessage.includes('Stack ARN:') || 
-      cleanedMessage.includes('has completed updating')) {
-    return true;
-  }
-  
-  // Filter deployment time messages
-  if (cleanedMessage.includes('Deployment time:') || 
-      cleanedMessage.includes('Total time:')) {
-    return true;
-  }
-  
-  return false;
-}
-
-/**
  * Extract CloudFormation events from a message
  * @param message The message to extract events from
  * @returns An array of CloudFormation events
@@ -241,6 +200,26 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
   readonly describe: string;
 
   /**
+   * WebSocket server for real-time log streaming
+   */
+  private wsServer: WebSocketServer | null = null;
+
+  /**
+   * WebSocket server port
+   */
+  private wsPort: number = 3334; // Different from main server port
+
+  /**
+   * ARN of the log forwarder Lambda function
+   */
+  private logForwarderLambdaArn: string | null = null;
+
+  /**
+   * Set of active subscription filters
+   */
+  private activeSubscriptions = new Set<string>();
+
+  /**
    * DevTools command constructor.
    */
   constructor() {
@@ -251,10 +230,363 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
   /**
    * @inheritDoc
    */
+  /**
+   * Creates or gets the IAM role for the log forwarder Lambda
+   */
+  private async createLogForwarderRole(): Promise<string> {
+    const iamClient = new IAMClient();
+    const roleName = 'amplify-devtools-log-forwarder-role';
+    
+    try {
+      // Check if role already exists
+      const getResponse = await iamClient.send(
+        new GetRoleCommand({ RoleName: roleName })
+      );
+      if (!getResponse.Role?.Arn) {
+        throw new Error('Role exists but Arn is undefined');
+      }
+      return getResponse.Role.Arn;
+    } catch (error) {
+      // Role doesn't exist, create it
+      const createResponse = await iamClient.send(
+        new CreateRoleCommand({
+          RoleName: roleName,
+          AssumeRolePolicyDocument: JSON.stringify({
+            Version: '2012-10-17',
+            Statement: [
+              {
+                Effect: 'Allow',
+                Principal: {
+                  Service: 'lambda.amazonaws.com'
+                },
+                Action: 'sts:AssumeRole'
+              }
+            ]
+          })
+        })
+      );
+      
+      if (!createResponse.Role?.Arn) {
+        throw new Error('Failed to create role: Arn is undefined');
+      }
+      
+      // Add permissions policy
+      await iamClient.send(
+        new PutRolePolicyCommand({
+          RoleName: roleName,
+          PolicyName: 'amplify-devtools-log-forwarder-policy',
+          PolicyDocument: JSON.stringify({
+            Version: '2012-10-17',
+            Statement: [
+              {
+                Effect: 'Allow',
+                Action: [
+                  'logs:CreateLogGroup',
+                  'logs:CreateLogStream',
+                  'logs:PutLogEvents'
+                ],
+                Resource: 'arn:aws:logs:*:*:*'
+              }
+            ]
+          })
+        })
+      );
+      
+      // Wait for role to propagate
+      await new Promise(resolve => setTimeout(resolve, 5000));
+      
+      return createResponse.Role.Arn;
+    }
+  }
+
+  /**
+   * Creates or gets the log forwarder Lambda function
+   */
+  private async createLogForwarderLambda(): Promise<string | null> {
+    const lambdaClient = new LambdaClient();
+    const logForwarderName = 'amplify-devtools-log-forwarder';
+    const localIp = await this.getLocalIpAddress();
+    
+    // If we couldn't find a suitable IP address, we can't create the Lambda function
+    if (localIp === null) {
+      printer.log(
+        'Cannot create log forwarder Lambda function without a valid IP address. ' +
+        'Real-time log streaming will not be available.',
+        LogLevel.WARN
+      );
+      return null;
+    }
+    
+    try {
+      // Check if Lambda already exists
+      const getResponse = await lambdaClient.send(
+        new GetFunctionCommand({ FunctionName: logForwarderName })
+      );
+      
+      if (!getResponse.Configuration?.FunctionArn) {
+        throw new Error('Lambda function exists but FunctionArn is undefined');
+      }
+      
+      this.logForwarderLambdaArn = getResponse.Configuration.FunctionArn;
+      return getResponse.Configuration.FunctionArn;
+    } catch (error) {
+      // Lambda doesn't exist, create it
+      const roleArn = await this.createLogForwarderRole();
+      
+      const createResponse = await lambdaClient.send(
+        new CreateFunctionCommand({
+          FunctionName: logForwarderName,
+          Runtime: 'nodejs18.x',
+          Role: roleArn,
+          Handler: 'index.handler',
+          Code: {
+            ZipFile: Buffer.from(`
+              const https = require('https');
+              const http = require('http');
+              const WebSocket = require('ws');
+              const zlib = require('zlib');
+              
+              // WebSocket endpoint for your DevTools
+              const wsEndpoint = process.env.WEBSOCKET_ENDPOINT;
+              
+              exports.handler = async (event, context) => {
+                // Decode and decompress the CloudWatch Logs data
+                const payload = Buffer.from(event.awslogs.data, 'base64');
+                const decompressed = zlib.gunzipSync(payload).toString('utf8');
+                const logData = JSON.parse(decompressed);
+                
+                // Extract resource ID from log group name
+                const logGroupParts = logData.logGroup.split('/');
+                const resourceId = logGroupParts[logGroupParts.length - 1];
+                
+                // Format log entries
+                const logs = logData.logEvents.map(event => ({
+                  timestamp: new Date(event.timestamp).toISOString(),
+                  message: event.message
+                }));
+                
+                // Send logs to WebSocket if we have any
+                if (logs.length > 0 && wsEndpoint) {
+                  try {
+                    // Use http or https based on the endpoint
+                    const ws = new WebSocket(wsEndpoint, {
+                      rejectUnauthorized: false // Allow self-signed certs for local dev
+                    });
+                    
+                    await new Promise((resolve, reject) => {
+                      ws.on('open', () => {
+                        ws.send(JSON.stringify({
+                          event: 'resourceLogs',
+                          data: {
+                            resourceId,
+                            logs
+                          }
+                        }));
+                        resolve();
+                      });
+                      
+                      ws.on('error', (error) => {
+                        console.error('WebSocket error:', error);
+                        reject(error);
+                      });
+                      
+                      // Set a timeout in case connection hangs
+                      setTimeout(() => reject(new Error('WebSocket connection timeout')), 5000);
+                    });
+                    
+                    ws.close();
+                    return { statusCode: 200, body: 'Logs sent successfully' };
+                  } catch (error) {
+                    console.error('Error sending logs to WebSocket:', error);
+                    return { statusCode: 500, body: 'Error sending logs' };
+                  }
+                }
+                
+                return { statusCode: 200, body: 'No logs to process' };
+              };
+            `)
+          },
+          Environment: {
+            Variables: {
+              WEBSOCKET_ENDPOINT: `ws://${localIp}:${this.wsPort}`
+            }
+          },
+          Timeout: 10 // 10 seconds
+        })
+      );
+      
+      // Add permission for CloudWatch Logs to invoke this Lambda
+      await lambdaClient.send(
+        new AddPermissionCommand({
+          FunctionName: logForwarderName,
+          StatementId: 'cloudwatch-logs-invoke',
+          Action: 'lambda:InvokeFunction',
+          Principal: 'logs.amazonaws.com'
+        })
+      );
+      
+      if (!createResponse.FunctionArn) {
+        throw new Error('Failed to create Lambda function: FunctionArn is undefined');
+      }
+      
+      this.logForwarderLambdaArn = createResponse.FunctionArn;
+      return createResponse.FunctionArn;
+    }
+  }
+
+  /**
+   * Gets the local IP address to use for the WebSocket endpoint
+   * @returns The local IP address or null if no suitable address is found
+   */
+  private async getLocalIpAddress(): Promise<string | null> {
+    const nets = networkInterfaces();
+    
+    // Find a non-internal IPv4 address
+    for (const name of Object.keys(nets)) {
+      if(nets[name]!=undefined){
+        for (const net of nets[name]) {
+          if (net.family === 'IPv4' && !net.internal && net.address) {
+            return net.address;
+          }
+        }
+      }
+    }
+    // Return null instead of falling back to localhost
+    printer.log(
+      'Could not find a suitable network interface for external connections. ' +
+      'Real-time log streaming will not be available. ' +
+      'Falling back to polling-based logs.',
+      LogLevel.WARN
+    );
+    return null;
+  }
+
+  /**
+   * Sets up a subscription filter for a log group
+   */
+  private async setupLogSubscription(logGroupName: string, resourceId: string): Promise<boolean> {
+    try {
+      // Create or get the Lambda function
+      const logForwarderArn = await this.createLogForwarderLambda();
+      
+      // If we couldn't create the Lambda function, we can't set up the subscription
+      if (logForwarderArn === null) {
+        printer.log(
+          `Cannot set up log subscription for ${resourceId} without a valid Lambda function. ` +
+          'Falling back to polling-based logs.',
+          LogLevel.WARN
+        );
+        return false;
+      }
+      
+      // Create a unique filter name for this resource
+      const filterName = `amplify-devtools-${resourceId}-${randomUUID().substring(0, 8)}`;
+      
+      // Create a subscription filter
+      const cwLogsClient = new CloudWatchLogsClient();
+      await cwLogsClient.send(
+        new PutSubscriptionFilterCommand({
+          logGroupName,
+          filterName,
+          filterPattern: '', // Match all logs
+          destinationArn: logForwarderArn
+        })
+      );
+      
+      // Store the active subscription
+      this.activeSubscriptions.add(`${logGroupName}:${filterName}`);
+      
+      printer.log(`Set up log subscription for ${resourceId}`, LogLevel.INFO);
+      return true;
+    } catch (error) {
+      printer.log(`Error setting up log subscription: ${error}`, LogLevel.ERROR);
+      return false;
+    }
+  }
+
+  /**
+   * Removes a subscription filter for a log group
+   */
+  private async removeLogSubscription(logGroupName: string, resourceId: string): Promise<boolean> {
+    try {
+      const cwLogsClient = new CloudWatchLogsClient();
+      
+      // Find the filter name for this resource
+      const filterPrefix = `amplify-devtools-${resourceId}`;
+      let filterToRemove = null;
+      
+      for (const subscription of this.activeSubscriptions) {
+        const [group, filter] = subscription.split(':');
+        if (group === logGroupName && filter.startsWith(filterPrefix)) {
+          filterToRemove = filter;
+          break;
+        }
+      }
+      
+      if (!filterToRemove) {
+        printer.log(`No active subscription found for ${resourceId}`, LogLevel.INFO);
+        return false;
+      }
+      
+      // Delete the subscription filter
+      await cwLogsClient.send(
+        new DeleteSubscriptionFilterCommand({
+          logGroupName,
+          filterName: filterToRemove
+        })
+      );
+      
+      // Remove from active subscriptions
+      this.activeSubscriptions.delete(`${logGroupName}:${filterToRemove}`);
+      
+      printer.log(`Removed log subscription for ${resourceId}`, LogLevel.INFO);
+      return true;
+    } catch (error) {
+      printer.log(`Error removing log subscription: ${error}`, LogLevel.ERROR);
+      return false;
+    }
+  }
+
   handler = async (): Promise<void> => {
     const app = express();
     const server = createServer(app);
     const io = new Server(server);
+    
+    // Create WebSocket server for real-time log streaming
+    const wsServer = new WebSocketServer({ port: this.wsPort });
+    this.wsServer = wsServer;
+    
+    printer.log(`WebSocket server for log streaming started on port ${this.wsPort}`, LogLevel.INFO);
+    
+    // Handle WebSocket connections
+    wsServer.on('connection', (ws) => {
+      printer.log('Log streaming WebSocket client connected', LogLevel.DEBUG);
+      
+      ws.on('message', (message) => {
+        try {
+          const data = JSON.parse(message.toString());
+          
+          // If this is a log message from our Lambda
+          if (data.event === 'resourceLogs' && data.data) {
+            // Forward to all Socket.IO clients
+            io.emit('resourceLogs', data.data);
+            
+            // Save logs to local storage
+            if (data.data.resourceId && data.data.logs) {
+              data.data.logs.forEach((log: { timestamp: string; message: string }) => {
+                storageManager.appendCloudWatchLog(data.data.resourceId, log);
+              });
+            }
+          }
+        } catch (error) {
+          printer.log(`Error processing WebSocket message: ${error}`, LogLevel.ERROR);
+        }
+      });
+      
+      ws.on('close', () => {
+        printer.log('Log streaming WebSocket client disconnected', LogLevel.DEBUG);
+      });
+    });
 
     // Serve static files from the React app's 'dist' directory
     const publicPath = join(
@@ -685,6 +1017,75 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
         socket.emit('activeLogStreams', resourceIds);
       });
       
+      // Handle request for log settings
+      socket.on('getLogSettings', () => {
+        printer.log('DEBUG: getLogSettings event received', LogLevel.DEBUG);
+        // Get current log size
+        const currentSizeMB = storageManager.getLogsSizeInMB();
+        
+        socket.emit('logSettings', { 
+          maxLogSizeMB: storageManager.maxLogSizeMB || 50,
+          currentSizeMB
+        });
+      });
+      
+      // Handle save log settings request
+      socket.on('saveLogSettings', (settings) => {
+        printer.log(`DEBUG: saveLogSettings event received: ${JSON.stringify(settings)}`, LogLevel.DEBUG);
+        if (settings && typeof settings.maxLogSizeMB === 'number') {
+          storageManager.setMaxLogSize(settings.maxLogSizeMB);
+          
+          // Get updated log size
+          const currentSizeMB = storageManager.getLogsSizeInMB();
+          
+          // Broadcast the updated settings to all clients
+          io.emit('logSettings', { 
+            maxLogSizeMB: settings.maxLogSizeMB,
+            currentSizeMB
+          });
+          
+          printer.log(`Log settings updated: Max size set to ${settings.maxLogSizeMB} MB`, LogLevel.INFO);
+        }
+      });
+      
+      // Handle request for custom friendly names
+      socket.on('getCustomFriendlyNames', () => {
+        printer.log('DEBUG: getCustomFriendlyNames event received', LogLevel.DEBUG);
+        const friendlyNames = storageManager.loadCustomFriendlyNames();
+        socket.emit('customFriendlyNames', friendlyNames);
+      });
+      
+      // Handle update custom friendly name request
+      socket.on('updateCustomFriendlyName', (data: { resourceId: string; friendlyName: string }) => {
+        printer.log(`DEBUG: updateCustomFriendlyName event received for ${data.resourceId}: ${data.friendlyName}`, LogLevel.DEBUG);
+        if (data && data.resourceId && data.friendlyName) {
+          storageManager.updateCustomFriendlyName(data.resourceId, data.friendlyName);
+          
+          // Broadcast the updated friendly name to all clients
+          io.emit('customFriendlyNameUpdated', { 
+            resourceId: data.resourceId,
+            friendlyName: data.friendlyName
+          });
+          
+          printer.log(`Custom friendly name updated for ${data.resourceId}: ${data.friendlyName}`, LogLevel.INFO);
+        }
+      });
+      
+      // Handle remove custom friendly name request
+      socket.on('removeCustomFriendlyName', (data: { resourceId: string }) => {
+        printer.log(`DEBUG: removeCustomFriendlyName event received for ${data.resourceId}`, LogLevel.DEBUG);
+        if (data && data.resourceId) {
+          storageManager.removeCustomFriendlyName(data.resourceId);
+          
+          // Broadcast the removal to all clients
+          io.emit('customFriendlyNameRemoved', { 
+            resourceId: data.resourceId
+          });
+          
+          printer.log(`Custom friendly name removed for ${data.resourceId}`, LogLevel.INFO);
+        }
+      });
+      
       // Map to track active log polling intervals
       const activeLogPollers = new Map<string, NodeJS.Timeout>();
       
@@ -723,9 +1124,6 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
           // eslint-disable-next-line spellcheck/spell-checker
           if (!activeLogPollers.has(data.resourceId)) {
             try {
-              // Create CloudWatch Logs client
-              const cwLogsClient = new CloudWatchLogsClient();
-              
               // Check if resource type is defined
               if (!data.resourceType) {
                 socket.emit('logStreamError', {
@@ -758,6 +1156,37 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
                 status: 'starting'
               });
               
+              // Try to set up real-time log streaming first
+              const subscriptionSuccess = await this.setupLogSubscription(logGroupName, data.resourceId);
+              
+              if (subscriptionSuccess) {
+                // Real-time log streaming set up successfully
+                printer.log(`Real-time log streaming set up for ${data.resourceId}`, LogLevel.INFO);
+                
+                // Save the logging state to local storage
+                storageManager.saveResourceLoggingState(data.resourceId, true);
+                
+                // Notify client that logs are now being recorded
+                socket.emit('logStreamStatus', {
+                  resourceId: data.resourceId,
+                  status: 'active'
+                });
+                
+                // Also broadcast to all clients to ensure UI is updated everywhere
+                io.emit('logStreamStatus', {
+                  resourceId: data.resourceId,
+                  status: 'active'
+                });
+                
+                return;
+              }
+              
+              // If real-time log streaming failed, fall back to polling
+              printer.log(`Falling back to polling-based logs for ${data.resourceId}`, LogLevel.INFO);
+              
+              // Create CloudWatch Logs client
+              const cwLogsClient = new CloudWatchLogsClient();
+              
               // Get the latest log stream
               const describeStreamsResponse = await cwLogsClient.send(
                 new DescribeLogStreamsCommand({
@@ -776,7 +1205,7 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
                 return;
               }
               
-              const logStreamName = describeStreamsResponse.logStreams[0].logStreamName;
+              const logStreamName = describeStreamsResponse.logStreams[0].logStreamName || '';
               let nextToken: string | undefined = undefined;
               
               // Function to fetch and save logs
@@ -802,7 +1231,7 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
                     }));
                     
                     // Save logs to local storage
-                    logs.forEach(log => {
+                    logs.forEach((log: { timestamp: string; message: string }) => {
                       storageManager.appendCloudWatchLog(data.resourceId, log);
                     });
                     
@@ -862,35 +1291,52 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
         } else {
           // Stop logging
           const pollingInterval = activeLogPollers.get(data.resourceId);
+          
+          // Determine log group name based on resource type
+          let logGroupName: string;
+          if (data.resourceType === 'AWS::Lambda::Function') {
+            logGroupName = `/aws/lambda/${data.resourceId}`;
+          } else if (data.resourceType === 'AWS::ApiGateway::RestApi') {
+            logGroupName = `API-Gateway-Execution-Logs_${data.resourceId}`;
+          } else if (data.resourceType === 'AWS::AppSync::GraphQLApi') {
+            // eslint-disable-next-line spellcheck/spell-checker
+            logGroupName = `/aws/appsync/apis/${data.resourceId}`;
+          } else {
+            socket.emit('logStreamError', {
+              resourceId: data.resourceId,
+              error: `Unsupported resource type for logs: ${data.resourceType}`
+            });
+            return;
+          }
+          
+          // Try to remove subscription filter if it exists
+          await this.removeLogSubscription(logGroupName, data.resourceId);
+          
           if (pollingInterval) {
             // Stop polling
             clearInterval(pollingInterval);
             activeLogPollers.delete(data.resourceId);
             
-            // Save the logging state to local storage
-            printer.log(`DEBUG: Saving inactive logging state for resource ${data.resourceId}`, LogLevel.DEBUG);
-            storageManager.saveResourceLoggingState(data.resourceId, false);
-            
-            // Notify client that logs are no longer being recorded
-            socket.emit('logStreamStatus', {
-              resourceId: data.resourceId,
-              status: 'stopped'
-            });
-            
-            // Also broadcast to all clients to ensure UI is updated everywhere
-            io.emit('logStreamStatus', {
-              resourceId: data.resourceId,
-              status: 'stopped'
-            });
-            
             printer.log(`Stopped log polling for resource ${data.resourceId}`, LogLevel.INFO);
-          } else {
-            socket.emit('logStreamStatus', {
-              resourceId: data.resourceId,
-              status: 'not-active'
-            });
-            printer.log(`No active log polling found for resource ${data.resourceId}`, LogLevel.INFO);
           }
+          
+          // Save the logging state to local storage
+          printer.log(`DEBUG: Saving inactive logging state for resource ${data.resourceId}`, LogLevel.DEBUG);
+          storageManager.saveResourceLoggingState(data.resourceId, false);
+          
+          // Notify client that logs are no longer being recorded
+          socket.emit('logStreamStatus', {
+            resourceId: data.resourceId,
+            status: 'stopped'
+          });
+          
+          // Also broadcast to all clients to ensure UI is updated everywhere
+          io.emit('logStreamStatus', {
+            resourceId: data.resourceId,
+            status: 'stopped'
+          });
+          
+          printer.log(`Stopped logging for resource ${data.resourceId}`, LogLevel.INFO);
         }
       });
       
@@ -1296,6 +1742,34 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
           }
         }
         
+        // Clean up WebSocket server
+        if (this.wsServer) {
+          printer.log('Closing WebSocket server', LogLevel.INFO);
+          this.wsServer.close();
+          this.wsServer = null;
+        }
+        
+        // Clean up any active subscription filters
+        if (this.activeSubscriptions.size > 0) {
+          printer.log(`Cleaning up ${this.activeSubscriptions.size} active subscription filters`, LogLevel.INFO);
+          for (const subscription of this.activeSubscriptions) {
+            const [logGroupName, filterName] = subscription.split(':');
+            try {
+              const cwLogsClient = new CloudWatchLogsClient();
+              await cwLogsClient.send(
+                new DeleteSubscriptionFilterCommand({
+                  logGroupName,
+                  filterName
+                })
+              );
+              printer.log(`Removed subscription filter ${filterName} from ${logGroupName}`, LogLevel.DEBUG);
+            } catch (error) {
+              printer.log(`Error removing subscription filter: ${error}`, LogLevel.ERROR);
+            }
+          }
+          this.activeSubscriptions.clear();
+        }
+        
         // Clear all stored resources when devtools ends
         storageManager.clearAll();
         
@@ -1339,7 +1813,34 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
         }
       }
       
-      // Clear all stored resources when devtools ends
+      // Clean up WebSocket server
+      if (this.wsServer) {
+        printer.log('Closing WebSocket server', LogLevel.INFO);
+        this.wsServer.close();
+        this.wsServer = null;
+      }
+      
+      // Clean up any active subscription filters
+      if (this.activeSubscriptions.size > 0) {
+        printer.log(`Cleaning up ${this.activeSubscriptions.size} active subscription filters`, LogLevel.INFO);
+        for (const subscription of this.activeSubscriptions) {
+          const [logGroupName, filterName] = subscription.split(':');
+          try {
+            const cwLogsClient = new CloudWatchLogsClient();
+            await cwLogsClient.send(
+              new DeleteSubscriptionFilterCommand({
+                logGroupName,
+                filterName
+              })
+            );
+            printer.log(`Removed subscription filter ${filterName} from ${logGroupName}`, LogLevel.DEBUG);
+          } catch (error) {
+            printer.log(`Error removing subscription filter: ${error}`, LogLevel.ERROR);
+          }
+        }
+        this.activeSubscriptions.clear();
+      }
+      
       // Clear all stored resources when devtools ends
       storageManager.clearAll();
       
@@ -1370,7 +1871,34 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
         }
       }
       
-      // Clear all stored resources when devtools ends
+      // Clean up WebSocket server
+      if (this.wsServer) {
+        printer.log('Closing WebSocket server', LogLevel.INFO);
+        this.wsServer.close();
+        this.wsServer = null;
+      }
+      
+      // Clean up any active subscription filters
+      if (this.activeSubscriptions.size > 0) {
+        printer.log(`Cleaning up ${this.activeSubscriptions.size} active subscription filters`, LogLevel.INFO);
+        for (const subscription of this.activeSubscriptions) {
+          const [logGroupName, filterName] = subscription.split(':');
+          try {
+            const cwLogsClient = new CloudWatchLogsClient();
+            await cwLogsClient.send(
+              new DeleteSubscriptionFilterCommand({
+                logGroupName,
+                filterName
+              })
+            );
+            printer.log(`Removed subscription filter ${filterName} from ${logGroupName}`, LogLevel.DEBUG);
+          } catch (error) {
+            printer.log(`Error removing subscription filter: ${error}`, LogLevel.ERROR);
+          }
+        }
+        this.activeSubscriptions.clear();
+      }
+      
       // Clear all stored resources when devtools ends
       storageManager.clearAll();
       

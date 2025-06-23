@@ -14,12 +14,25 @@ export class LocalStorageManager {
   private readonly logsDir: string;
   private readonly cloudWatchLogsDir: string;
   private readonly resourceLoggingStateFile: string;
+  private readonly settingsFile: string;
+  private readonly customFriendlyNamesFile: string;
+  private readonly defaultMaxLogSizeMB = 50; // Default 50MB limit
+  private _maxLogSizeMB: number;
+  
+  /**
+   * Gets the current maximum log size in MB
+   */
+  get maxLogSizeMB(): number {
+    return this._maxLogSizeMB;
+  }
 
   /**
    * Creates a new LocalStorageManager
    * @param identifier Optional identifier to separate storage for different sandboxes
+   * @param options Optional configuration options
+   * @param options.maxLogSizeMB Optional maximum log size in MB
    */
-  constructor(identifier?: string) {
+  constructor(identifier?: string, options?: { maxLogSizeMB?: number }) {
     // Create a unique directory for this sandbox if identifier is provided
     const dirSuffix = identifier ? `-${identifier}` : '';
     // Use home directory instead of temp directory for more persistent storage
@@ -29,6 +42,8 @@ export class LocalStorageManager {
     this.logsDir = path.join(this.baseDir, 'logs');
     this.cloudWatchLogsDir = path.join(this.baseDir, 'cloudwatch-logs');
     this.resourceLoggingStateFile = path.join(this.baseDir, 'resource-logging-states.json');
+    this.settingsFile = path.join(this.baseDir, 'settings.json');
+    this.customFriendlyNamesFile = path.join(this.baseDir, 'custom-friendly-names.json');
     
     // Log the storage paths
     printer.log(`LocalStorageManager: Using base directory: ${this.baseDir}`, LogLevel.DEBUG);
@@ -38,55 +53,14 @@ export class LocalStorageManager {
     
     // Ensure directories exist
     this.ensureDirectories();
+    
+    // Load settings or use defaults
+    const settings = this.loadSettings();
+    this._maxLogSizeMB = options?.maxLogSizeMB || settings.maxLogSizeMB || this.defaultMaxLogSizeMB;
+    printer.log(`LocalStorageManager: Using max log size: ${this._maxLogSizeMB} MB`, LogLevel.DEBUG);
   }
 
-  /**
-   * Ensures all required directories exist
-   */
-  private ensureDirectories(): void {
-    try {
-      printer.log(`LocalStorageManager: Checking if base directory exists: ${this.baseDir}`, LogLevel.DEBUG);
-      if (!fs.existsSync(this.baseDir)) {
-        printer.log(`LocalStorageManager: Creating base directory: ${this.baseDir}`, LogLevel.DEBUG);
-        fs.mkdirSync(this.baseDir, { recursive: true });
-      }
-      
-      printer.log(`LocalStorageManager: Checking if logs directory exists: ${this.logsDir}`, LogLevel.DEBUG);
-      if (!fs.existsSync(this.logsDir)) {
-        printer.log(`LocalStorageManager: Creating logs directory: ${this.logsDir}`, LogLevel.DEBUG);
-        fs.mkdirSync(this.logsDir, { recursive: true });
-        printer.log(`LocalStorageManager: Logs directory created successfully`, LogLevel.DEBUG);
-      }
-      
-      printer.log(`LocalStorageManager: Checking if CloudWatch logs directory exists: ${this.cloudWatchLogsDir}`, LogLevel.DEBUG);
-      if (!fs.existsSync(this.cloudWatchLogsDir)) {
-        printer.log(`LocalStorageManager: Creating CloudWatch logs directory: ${this.cloudWatchLogsDir}`, LogLevel.DEBUG);
-        fs.mkdirSync(this.cloudWatchLogsDir, { recursive: true });
-        printer.log(`LocalStorageManager: CloudWatch logs directory created successfully`, LogLevel.DEBUG);
-      } else {
-        printer.log(`LocalStorageManager: CloudWatch logs directory already exists`, LogLevel.DEBUG);
-      }
-      
-      // Test write permissions by creating a test file
-      const testFilePath = path.join(this.baseDir, 'test-write-permissions.txt');
-      try {
-        printer.log(`LocalStorageManager: Testing write permissions with file: ${testFilePath}`, LogLevel.DEBUG);
-        fs.writeFileSync(testFilePath, 'Test write permissions');
-        printer.log(`LocalStorageManager: Write permissions test successful`, LogLevel.DEBUG);
-        
-        // Clean up test file
-        fs.unlinkSync(testFilePath);
-        printer.log(`LocalStorageManager: Test file removed`, LogLevel.INFO);
-      } catch (writeError) {
-        printer.log(`LocalStorageManager: Write permissions test failed: ${writeError}`, LogLevel.ERROR);
-      }
-    } catch (error) {
-      printer.log(`LocalStorageManager: Error creating directories: ${error}`, LogLevel.ERROR);
-      if (error instanceof Error) {
-        printer.log(`LocalStorageManager: Error stack: ${error.stack}`, LogLevel.DEBUG);
-      }
-    }
-  }
+  
 
   /**
    * Saves deployment progress events to a file
@@ -118,9 +92,8 @@ export class LocalStorageManager {
         const data = fs.readFileSync(this.deploymentProgressFile, 'utf8');
         const events = JSON.parse(data);
         return events;
-      } else {
-        printer.log(`LocalStorageManager: Deployment progress file does not exist`, LogLevel.DEBUG);
-      }
+      } 
+      printer.log(`LocalStorageManager: Deployment progress file does not exist`, LogLevel.DEBUG);
     } catch (error) {
       printer.log(`LocalStorageManager: Error loading deployment progress: ${error}`, LogLevel.ERROR);
       if (error instanceof Error) {
@@ -191,12 +164,73 @@ export class LocalStorageManager {
   }
 
   /**
+   * Gets the current size of all logs in MB
+   * @returns The total size of all logs in MB
+   */
+  getLogsSizeInMB(): number {
+    let totalSize = 0;
+    
+    // Check base directory files
+    if (fs.existsSync(this.baseDir)) {
+      fs.readdirSync(this.baseDir).forEach(file => {
+        const filePath = path.join(this.baseDir, file);
+        if (fs.lstatSync(filePath).isFile()) {
+          totalSize += fs.statSync(filePath).size;
+        }
+      });
+    }
+    
+    // Check logs directory
+    if (fs.existsSync(this.logsDir)) {
+      fs.readdirSync(this.logsDir).forEach(file => {
+        const filePath = path.join(this.logsDir, file);
+        totalSize += fs.statSync(filePath).size;
+      });
+    }
+    
+    // Check CloudWatch logs directory
+    if (fs.existsSync(this.cloudWatchLogsDir)) {
+      fs.readdirSync(this.cloudWatchLogsDir).forEach(file => {
+        const filePath = path.join(this.cloudWatchLogsDir, file);
+        totalSize += fs.statSync(filePath).size;
+      });
+    }
+    
+    // Convert bytes to MB
+    return totalSize / (1024 * 1024);
+  }
+
+  /**
+   * Checks if logs exceed the maximum size limit
+   * @returns True if logs exceed the size limit, false otherwise
+   */
+  logsExceedSizeLimit(): boolean {
+    return this.getLogsSizeInMB() > this._maxLogSizeMB;
+  }
+
+  /**
+   * Updates the maximum log size limit
+   * @param maxSizeMB The new maximum log size in MB
+   */
+  setMaxLogSize(maxSizeMB: number): void {
+    this._maxLogSizeMB = maxSizeMB;
+    // Save the setting to a config file
+    this.saveSettings({ maxLogSizeMB: this._maxLogSizeMB });
+  }
+
+  /**
    * Saves CloudWatch logs for a specific resource
    * @param resourceId The ID of the resource
    * @param logs The logs to save
    */
   saveCloudWatchLogs(resourceId: string, logs: any[]): void {
     try {
+      // Check if logs exceed size limit before saving
+      if (this.logsExceedSizeLimit()) {
+        printer.log(`LocalStorageManager: Logs exceed size limit of ${this._maxLogSizeMB}MB, clearing oldest logs`, LogLevel.WARN);
+        this.pruneOldestLogs();
+      }
+      
       const filePath = path.join(this.cloudWatchLogsDir, `${resourceId}.json`);
       printer.log(`LocalStorageManager: Saving CloudWatch logs for resource ${resourceId} to ${filePath}`, LogLevel.DEBUG);
       printer.log(`LocalStorageManager: Number of log entries: ${logs.length}`, LogLevel.INFO);
@@ -225,9 +259,8 @@ export class LocalStorageManager {
         const logs = JSON.parse(data);
         printer.log(`LocalStorageManager: Loaded ${logs.length} CloudWatch log entries for resource ${resourceId}`, LogLevel.DEBUG);
         return logs;
-      } else {
-        printer.log(`LocalStorageManager: CloudWatch logs file does not exist for resource ${resourceId}`, LogLevel.DEBUG);
       }
+      printer.log(`LocalStorageManager: CloudWatch logs file does not exist for resource ${resourceId}`, LogLevel.DEBUG);
     } catch (error) {
       printer.log(`LocalStorageManager: Error loading CloudWatch logs for resource ${resourceId}: ${error}`, LogLevel.ERROR);
       if (error instanceof Error) {
@@ -253,9 +286,8 @@ export class LocalStorageManager {
           .map(file => file.replace('.json', ''));
         printer.log(`LocalStorageManager: Found ${resourceIds.length} resources with CloudWatch logs`, LogLevel.DEBUG);
         return resourceIds;
-      } else {
-        printer.log(`LocalStorageManager: CloudWatch logs directory does not exist`, LogLevel.DEBUG);
       }
+      printer.log(`LocalStorageManager: CloudWatch logs directory does not exist`, LogLevel.DEBUG);
     } catch (error) {
       printer.log(`LocalStorageManager: Error getting resources with CloudWatch logs: ${error}`, LogLevel.DEBUG);
       if (error instanceof Error) {
@@ -381,7 +413,7 @@ export class LocalStorageManager {
         return JSON.parse(content);
       }
     } catch (error) {
-      console.error('Error loading resource logging states:', error);
+      printer.log(`Error loading resource logging states: ${error}`, LogLevel.ERROR);
     }
     return null;
   }
@@ -407,5 +439,192 @@ export class LocalStorageManager {
     return Object.entries(states)
       .filter(([, state]) => state.isActive)
       .map(([resourceId]) => resourceId);
+  }
+
+  /**
+   * Saves custom friendly names for resources
+   * @param friendlyNames Map of resource IDs to custom friendly names
+   */
+  saveCustomFriendlyNames(friendlyNames: Record<string, string>): void {
+    try {
+      fs.writeFileSync(
+        this.customFriendlyNamesFile,
+        JSON.stringify(friendlyNames, null, 2),
+        'utf8'
+      );
+      printer.log(`LocalStorageManager: Saved custom friendly names`, LogLevel.DEBUG);
+    } catch (error) {
+      printer.log(`Error saving custom friendly names: ${error}`, LogLevel.ERROR);
+    }
+  }
+
+  /**
+   * Loads custom friendly names for resources
+   * @returns Map of resource IDs to custom friendly names, or empty object if none exist
+   */
+  loadCustomFriendlyNames(): Record<string, string> {
+    try {
+      if (fs.existsSync(this.customFriendlyNamesFile)) {
+        const content = fs.readFileSync(this.customFriendlyNamesFile, 'utf8');
+        return JSON.parse(content);
+      }
+    } catch (error) {
+      printer.log(`Error loading custom friendly names: ${error}`, LogLevel.ERROR);
+    }
+    return {};
+  }
+
+  /**
+   * Updates a custom friendly name for a resource
+   * @param resourceId The ID of the resource
+   * @param friendlyName The custom friendly name
+   */
+  updateCustomFriendlyName(resourceId: string, friendlyName: string): void {
+    try {
+      const friendlyNames = this.loadCustomFriendlyNames();
+      friendlyNames[resourceId] = friendlyName;
+      this.saveCustomFriendlyNames(friendlyNames);
+      printer.log(`LocalStorageManager: Updated custom friendly name for ${resourceId}`, LogLevel.DEBUG);
+    } catch (error) {
+      printer.log(`Error updating custom friendly name: ${error}`, LogLevel.ERROR);
+    }
+  }
+
+  /**
+   * Removes a custom friendly name for a resource
+   * @param resourceId The ID of the resource
+   */
+  removeCustomFriendlyName(resourceId: string): void {
+    try {
+      const friendlyNames = this.loadCustomFriendlyNames();
+      if (friendlyNames[resourceId]) {
+        delete friendlyNames[resourceId];
+        this.saveCustomFriendlyNames(friendlyNames);
+        printer.log(`LocalStorageManager: Removed custom friendly name for ${resourceId}`, LogLevel.DEBUG);
+      }
+    } catch (error) {
+      printer.log(`Error removing custom friendly name: ${error}`, LogLevel.ERROR);
+    }
+  }
+
+  /**
+   * Ensures all required directories exist
+   */
+  private ensureDirectories(): void {
+    try {
+      printer.log(`LocalStorageManager: Checking if base directory exists: ${this.baseDir}`, LogLevel.DEBUG);
+      if (!fs.existsSync(this.baseDir)) {
+        printer.log(`LocalStorageManager: Creating base directory: ${this.baseDir}`, LogLevel.DEBUG);
+        fs.mkdirSync(this.baseDir, { recursive: true });
+      }
+      
+      printer.log(`LocalStorageManager: Checking if logs directory exists: ${this.logsDir}`, LogLevel.DEBUG);
+      if (!fs.existsSync(this.logsDir)) {
+        printer.log(`LocalStorageManager: Creating logs directory: ${this.logsDir}`, LogLevel.DEBUG);
+        fs.mkdirSync(this.logsDir, { recursive: true });
+        printer.log(`LocalStorageManager: Logs directory created successfully`, LogLevel.DEBUG);
+      }
+      
+      printer.log(`LocalStorageManager: Checking if CloudWatch logs directory exists: ${this.cloudWatchLogsDir}`, LogLevel.DEBUG);
+      if (!fs.existsSync(this.cloudWatchLogsDir)) {
+        printer.log(`LocalStorageManager: Creating CloudWatch logs directory: ${this.cloudWatchLogsDir}`, LogLevel.DEBUG);
+        fs.mkdirSync(this.cloudWatchLogsDir, { recursive: true });
+        printer.log(`LocalStorageManager: CloudWatch logs directory created successfully`, LogLevel.DEBUG);
+      } else {
+        printer.log(`LocalStorageManager: CloudWatch logs directory already exists`, LogLevel.DEBUG);
+      }
+      
+      // Test write permissions by creating a test file
+      const testFilePath = path.join(this.baseDir, 'test-write-permissions.txt');
+      try {
+        printer.log(`LocalStorageManager: Testing write permissions with file: ${testFilePath}`, LogLevel.DEBUG);
+        fs.writeFileSync(testFilePath, 'Test write permissions');
+        printer.log(`LocalStorageManager: Write permissions test successful`, LogLevel.DEBUG);
+        
+        // Clean up test file
+        fs.unlinkSync(testFilePath);
+        printer.log(`LocalStorageManager: Test file removed`, LogLevel.INFO);
+      } catch (writeError) {
+        printer.log(`LocalStorageManager: Write permissions test failed: ${writeError}`, LogLevel.ERROR);
+      }
+    } catch (error) {
+      printer.log(`LocalStorageManager: Error creating directories: ${error}`, LogLevel.ERROR);
+      if (error instanceof Error) {
+        printer.log(`LocalStorageManager: Error stack: ${error.stack}`, LogLevel.DEBUG);
+      }
+    }
+  }
+  
+  /**
+   * Saves settings to a file
+   * @param settings.maxLogSizeMB The maximum log size in MB
+   */
+  private saveSettings(settings: { maxLogSizeMB: number }): void {
+    try {
+      const settingsFile = path.join(this.baseDir, 'settings.json');
+      fs.writeFileSync(settingsFile, JSON.stringify(settings, null, 2));
+    } catch (error) {
+      printer.log(`Error saving settings: ${error}`, LogLevel.ERROR);
+    }
+  }
+
+  /**
+   * Loads settings from a file
+   * @returns The loaded settings or default settings if none exist
+   */
+  private loadSettings(): { maxLogSizeMB: number } {
+    try {
+      const settingsFile = path.join(this.baseDir, 'settings.json');
+      if (fs.existsSync(settingsFile)) {
+        const data = fs.readFileSync(settingsFile, 'utf8');
+        return JSON.parse(data);
+      }
+    } catch (error) {
+      printer.log(`Error loading settings: ${error}`, LogLevel.ERROR);
+    }
+    return { maxLogSizeMB: this.defaultMaxLogSizeMB };
+  }
+
+  /**
+   * Prunes the oldest log files when size limit is exceeded
+   */
+  private pruneOldestLogs(): void {
+    try {
+      // Get all log files with their modification times
+      const logFiles: {path: string, mtime: Date}[] = [];
+      
+      // Check CloudWatch logs directory
+      if (fs.existsSync(this.cloudWatchLogsDir)) {
+        fs.readdirSync(this.cloudWatchLogsDir).forEach(file => {
+          const filePath = path.join(this.cloudWatchLogsDir, file);
+          const stats = fs.statSync(filePath);
+          logFiles.push({ path: filePath, mtime: stats.mtime });
+        });
+      }
+      
+      // Check logs directory
+      if (fs.existsSync(this.logsDir)) {
+        fs.readdirSync(this.logsDir).forEach(file => {
+          const filePath = path.join(this.logsDir, file);
+          const stats = fs.statSync(filePath);
+          logFiles.push({ path: filePath, mtime: stats.mtime });
+        });
+      }
+      
+      // Sort by modification time (oldest first)
+      logFiles.sort((a, b) => a.mtime.getTime() - b.mtime.getTime());
+      
+      // Delete oldest files until we're under the limit
+      for (const file of logFiles) {
+        if (this.getLogsSizeInMB() <= this._maxLogSizeMB * 0.8) { // Remove until we're at 80% of limit
+          break;
+        }
+        
+        fs.unlinkSync(file.path);
+        printer.log(`LocalStorageManager: Removed old log file: ${file.path}`, LogLevel.INFO);
+      }
+    } catch (error) {
+      printer.log(`LocalStorageManager: Error pruning old logs: ${error}`, LogLevel.ERROR);
+    }
   }
 }

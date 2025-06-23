@@ -22,6 +22,7 @@ interface ResourceLogPanelProps {
   resourceType: string;
   onClose: () => void;
   socket: Socket | null;
+  deploymentInProgress?: boolean;
 }
 
 const ResourceLogPanel: React.FC<ResourceLogPanelProps> = ({ 
@@ -29,7 +30,8 @@ const ResourceLogPanel: React.FC<ResourceLogPanelProps> = ({
   resourceName, 
   resourceType,
   onClose,
-  socket
+  socket,
+  deploymentInProgress
 }) => {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [isRecording, setIsRecording] = useState<boolean>(false);
@@ -144,8 +146,10 @@ const ResourceLogPanel: React.FC<ResourceLogPanelProps> = ({
               <Button 
                 onClick={toggleRecording} 
                 variant={isRecording ? "normal" : "primary"}
+                disabled={!!deploymentInProgress}
               >
                 {isRecording ? "Stop Recording" : "Start Recording"}
+                {deploymentInProgress && " (disabled during deployment)"}
               </Button>
               <Button onClick={onClose} variant="link">
                 Close

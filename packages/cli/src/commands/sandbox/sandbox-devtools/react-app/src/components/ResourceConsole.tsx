@@ -1,7 +1,6 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { Socket } from 'socket.io-client';
-import { useResourceManager, Resource } from './ResourceManager';
-import { getAwsConsoleUrl, ResourceWithFriendlyName } from '../../../resource_console_functions';
+import { useResourceManager, ResourceWithFriendlyName } from '../hooks/useResourceManager';
 import ResourceLogPanel from './ResourceLogPanel';
 import '@cloudscape-design/global-styles/index.css';
 import {
@@ -21,8 +20,38 @@ import {
   Grid,
   Multiselect,
   SelectProps,
-  Badge
+  Badge,
+  Modal
 } from '@cloudscape-design/components';
+
+/**
+ * Get AWS console URL for a resource
+ * @param resource The resource
+ * @param region The AWS region
+ * @returns The AWS console URL
+ */
+const getAwsConsoleUrl = (resource: ResourceWithFriendlyName, region: string | null): string | null => {
+  if (!region) return null;
+  
+  const baseUrl = `https://${region}.console.aws.amazon.com`;
+  
+  switch (resource.resourceType) {
+    case 'AWS::Lambda::Function':
+      return `${baseUrl}/lambda/home?region=${region}#/functions/${resource.physicalResourceId}`;
+    case 'AWS::ApiGateway::RestApi':
+      return `${baseUrl}/apigateway/home?region=${region}#/apis/${resource.physicalResourceId}/resources`;
+    case 'AWS::DynamoDB::Table':
+      return `${baseUrl}/dynamodb/home?region=${region}#tables:selected=${resource.physicalResourceId}`;
+    case 'AWS::S3::Bucket':
+      return `${baseUrl}/s3/buckets/${resource.physicalResourceId}?region=${region}`;
+    case 'AWS::Cognito::UserPool':
+      return `${baseUrl}/cognito/home?region=${region}#/pool/${resource.physicalResourceId}/details`;
+    case 'AWS::AppSync::GraphQLApi':
+      return `${baseUrl}/appsync/home?region=${region}#/${resource.physicalResourceId}/v1/home`;
+    default:
+      return null;
+  }
+};
 
 interface ResourceConsoleProps {
   socket: Socket | null;
@@ -33,7 +62,7 @@ interface ResourceConsoleProps {
 type ColumnDefinition = {
   id: string;
   header: string;
-  cell: (item: Resource) => React.ReactNode;
+  cell: (item: ResourceWithFriendlyName) => React.ReactNode;
   width: number;
   minWidth: number;
 };
@@ -43,13 +72,14 @@ const ResourceConsole: React.FC<ResourceConsoleProps> = ({ socket, sandboxStatus
   const deploymentInProgress = sandboxStatus === 'deploying';
   const [initializing, setInitializing] = useState<boolean>(true);
   const [activeLogStreams, setActiveLogStreams] = useState<string[]>([]);
-  const [selectedLogResource, setSelectedLogResource] = useState<Resource | null>(null);
+  const [selectedLogResource, setSelectedLogResource] = useState<ResourceWithFriendlyName | null>(null);
   const [showLogViewer, setShowLogViewer] = useState<boolean>(false);
-  // Removed unused logEntries state
+  const [editingResource, setEditingResource] = useState<ResourceWithFriendlyName | null>(null);
+  const [editingFriendlyName, setEditingFriendlyName] = useState<string>('');
   const REFRESH_COOLDOWN_MS = 5000; // 5 seconds minimum between refreshes
   
   // Helper function to check if a resource supports logs
-  const supportsLogs = (resource: Resource): boolean => {
+  const supportsLogs = (resource: ResourceWithFriendlyName): boolean => {
     return (
       resource.resourceType === 'AWS::Lambda::Function' ||
       resource.resourceType === 'AWS::ApiGateway::RestApi' ||
@@ -57,24 +87,40 @@ const ResourceConsole: React.FC<ResourceConsoleProps> = ({ socket, sandboxStatus
     );
   };
 
-  // Wrap refreshResources with rate limiting
-  const { resources, loading, error, refreshResources: originalRefreshResources } = useResourceManager(socket, undefined, sandboxStatus);
+  // Use the resource manager hook
+  const { 
+    resources, 
+    isLoading, 
+    error,
+    region,
+    updateCustomFriendlyName,
+    removeCustomFriendlyName,
+    getResourceDisplayName,
+    refreshResources: originalRefreshResources 
+  } = useResourceManager(socket, undefined, sandboxStatus);
   
-  // Get the AWS region from the resources data - Moved before columnDefinitions
-  const region = useMemo(() => {
-    return resources?.region || null;
-  }, [resources]);
-
   // Define column definitions for all tables
   const columnDefinitions = React.useMemo<ColumnDefinition[]>(() => [
     {
       id: 'name',
       header: 'Resource Name',
-      cell: (item: Resource) => {
+      cell: (item: ResourceWithFriendlyName) => {
         const isLogging = activeLogStreams.includes(item.physicalResourceId);
         return (
           <SpaceBetween direction="horizontal" size="xs">
-            {getFriendlyResourceName(item)}
+            <div style={{ display: 'flex', alignItems: 'center' }}>
+              {getResourceDisplayName(item)}
+              <Button 
+                variant="icon" 
+                iconName="edit" 
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleEditFriendlyName(item);
+                }}
+                disabled={deploymentInProgress}
+                ariaLabel="Edit friendly name"
+              />
+            </div>
             {isLogging && <Badge color="green">Logging</Badge>}
           </SpaceBetween>
         );
@@ -85,14 +131,14 @@ const ResourceConsole: React.FC<ResourceConsoleProps> = ({ socket, sandboxStatus
     {
       id: 'logicalId',
       header: 'Logical ID',
-      cell: (item: Resource) => item.logicalResourceId,
+      cell: (item: ResourceWithFriendlyName) => item.logicalResourceId,
       width: 600,
       minWidth: 200
     },
     {
       id: 'status',
       header: 'Status',
-      cell: (item: Resource) => (
+      cell: (item: ResourceWithFriendlyName) => (
         <Box padding="s">
           <SpaceBetween direction="vertical" size="xs">
             <Box color="text-status-info" fontSize="body-m">
@@ -107,23 +153,29 @@ const ResourceConsole: React.FC<ResourceConsoleProps> = ({ socket, sandboxStatus
     {
       id: 'physicalId',
       header: 'Physical ID',
-      cell: (item: Resource) => item.physicalResourceId,
+      cell: (item: ResourceWithFriendlyName) => item.physicalResourceId,
       width: 600,
       minWidth: 300
     },
     {
       id: 'actions',
       header: 'Actions',
-      cell: (item: Resource) => {
-        const url = getAwsConsoleUrl(item as ResourceWithFriendlyName, region);
+      cell: (item: ResourceWithFriendlyName) => {
+        const url = getAwsConsoleUrl(item, region);
         const isLogging = activeLogStreams.includes(item.physicalResourceId);
         
         return (
           <SpaceBetween direction="horizontal" size="xs">
             {url && (
-              <Link href={url} external>
-                View in AWS Console
-              </Link>
+              deploymentInProgress ? (
+                <span style={{ color: '#888' }}>
+                  View in AWS Console (disabled during deployment)
+                </span>
+              ) : (
+                <Link href={url} external>
+                  View in AWS Console
+                </Link>
+              )
             )}
             {supportsLogs(item) && (
               <SpaceBetween direction="horizontal" size="xs">
@@ -151,7 +203,7 @@ const ResourceConsole: React.FC<ResourceConsoleProps> = ({ socket, sandboxStatus
                       }
                     }
                   }}
-                  disabled={!!(showLogViewer && selectedLogResource && selectedLogResource.physicalResourceId === item.physicalResourceId)}
+                  disabled={deploymentInProgress || !!(showLogViewer && selectedLogResource && selectedLogResource.physicalResourceId === item.physicalResourceId)}
                 >
                   {isLogging ? "Stop Logs" : "Start Logs"}
                 </Button>
@@ -169,6 +221,7 @@ const ResourceConsole: React.FC<ResourceConsoleProps> = ({ socket, sandboxStatus
                     setSelectedLogResource(item);
                     setShowLogViewer(true);
                   }}
+                  disabled={deploymentInProgress}
                 >
                   View Logs
                 </Button>
@@ -180,7 +233,7 @@ const ResourceConsole: React.FC<ResourceConsoleProps> = ({ socket, sandboxStatus
       width: 250,
       minWidth: 250
     }
-  ], [activeLogStreams, region, selectedLogResource]);
+  ], [activeLogStreams, region, selectedLogResource, deploymentInProgress, showLogViewer]);
 
   // Empty state for tables
   const emptyState = (
@@ -210,13 +263,6 @@ const ResourceConsole: React.FC<ResourceConsoleProps> = ({ socket, sandboxStatus
   // Listen for deployment messages
   useEffect(() => {
     if (!socket) return;
-    
-  //   const handleDeploymentInProgress = (data: { message: string }) => {
-  //     console.log('ResourceConsole: Deployment in progress:', data.message);
-  //     setDeploymentMessage(data.message);
-  //   };
-    
-    // socket.on('deploymentInProgress', handleDeploymentInProgress);
     
     // Get active log streams on initial load
     socket.emit('getActiveLogStreams');
@@ -268,22 +314,11 @@ const ResourceConsole: React.FC<ResourceConsoleProps> = ({ socket, sandboxStatus
     socket.on('logStreamError', handleLogStreamError);
     
     return () => {
-      // socket.off('deploymentInProgress', handleDeploymentInProgress);
       socket.off('activeLogStreams', handleActiveLogStreams);
       socket.off('logStreamStatus', handleLogStreamStatus);
       socket.off('logStreamError', handleLogStreamError);
     };
   }, [socket, selectedLogResource]);
-  
-  // // Update deployment message when sandbox status changes
-  // useEffect(() => {
-  //   if (sandboxStatus === 'deploying') {
-  //     setDeploymentMessage('Sandbox is being deployed...');
-  //   } else if (sandboxStatus === 'running') {
-  //     // Always clear deployment message when status changes to running
-  //     setDeploymentMessage('');
-  //   }
-  // }, [sandboxStatus]);
   
   const refreshResources = React.useCallback(() => {
     const now = Date.now();
@@ -303,10 +338,10 @@ const ResourceConsole: React.FC<ResourceConsoleProps> = ({ socket, sandboxStatus
 
   // Extract all unique resource types and statuses for filter options
   const serviceTypeOptions = useMemo(() => {
-    if (!resources?.resources) return [];
+    if (!resources) return [];
     
     const types = new Set<string>();
-    resources.resources.forEach((resource: Resource) => {
+    resources.forEach((resource: ResourceWithFriendlyName) => {
       if (resource.resourceType !== 'AWS::CDK::Metadata') {
         types.add(resource.resourceType);
       }
@@ -316,10 +351,10 @@ const ResourceConsole: React.FC<ResourceConsoleProps> = ({ socket, sandboxStatus
   }, [resources, sandboxStatus]);
 
   const statusOptions = useMemo(() => {
-    if (!resources?.resources) return [];
+    if (!resources) return [];
     
     const statuses = new Set<string>();
-    resources.resources.forEach((resource: Resource) => {
+    resources.forEach((resource: ResourceWithFriendlyName) => {
       statuses.add(resource.resourceStatus);
     });
     
@@ -343,22 +378,41 @@ const ResourceConsole: React.FC<ResourceConsoleProps> = ({ socket, sandboxStatus
     }
     return resourceType;
   };
-
-  // Get a friendly name for a resource based on its friendlyName property or logical ID
-  const getFriendlyResourceName = (resource: Resource): string => {
-    // If the resource has a friendlyName property, use it
-    if (resource.friendlyName) {
-      return resource.friendlyName;
+  
+  // Handle editing a resource's friendly name
+  const handleEditFriendlyName = (resource: ResourceWithFriendlyName) => {
+    setEditingResource(resource);
+    // Set the initial value to the current friendly name
+    setEditingFriendlyName(getResourceDisplayName(resource));
+  };
+  
+  // Handle saving a custom friendly name
+  const handleSaveFriendlyName = () => {
+    if (editingResource) {
+      // Save the custom friendly name
+      updateCustomFriendlyName(editingResource.physicalResourceId, editingFriendlyName);
+      
+      // Close the modal
+      setEditingResource(null);
     }
-    // Otherwise, fall back to the logical ID
-    return resource.logicalResourceId;
+  };
+  
+  // Handle removing a custom friendly name
+  const handleRemoveFriendlyName = () => {
+    if (editingResource) {
+      // Remove the custom friendly name
+      removeCustomFriendlyName(editingResource.physicalResourceId);
+      
+      // Close the modal
+      setEditingResource(null);
+    }
   };
 
   // Filter resources based on search query and selected filters
   const filteredResources = useMemo(() => {
-    if (!resources?.resources) return [];
+    if (!resources) return [];
     
-    return resources.resources.filter((resource: Resource) => {
+    return resources.filter((resource: ResourceWithFriendlyName) => {
       // Filter out CDK metadata
       if (resource.resourceType === 'AWS::CDK::Metadata') return false;
       
@@ -367,7 +421,7 @@ const ResourceConsole: React.FC<ResourceConsoleProps> = ({ socket, sandboxStatus
       const matchesSearch = searchQuery === '' || 
         resource.logicalResourceId.toLowerCase().includes(searchLower) ||
         resource.physicalResourceId.toLowerCase().includes(searchLower) ||
-        getFriendlyResourceName(resource).toLowerCase().includes(searchLower) ||
+        getResourceDisplayName(resource).toLowerCase().includes(searchLower) ||
         resource.resourceType.toLowerCase().includes(searchLower);
       
       const matchesServiceType = selectedServiceTypes.length === 0 || 
@@ -378,13 +432,13 @@ const ResourceConsole: React.FC<ResourceConsoleProps> = ({ socket, sandboxStatus
       
       return matchesSearch && matchesServiceType && matchesStatus;
     });
-  }, [resources, searchQuery, selectedServiceTypes, selectedStatuses]);
+  }, [resources, searchQuery, selectedServiceTypes, selectedStatuses, getResourceDisplayName]);
 
   // Group filtered resources by service and then by resource type
   const groupedResources = useMemo(() => {
-    const serviceGroups: Record<string, Record<string, Resource[]>> = {};
+    const serviceGroups: Record<string, Record<string, ResourceWithFriendlyName[]>> = {};
     
-    filteredResources.forEach((resource: Resource) => {
+    filteredResources.forEach((resource: ResourceWithFriendlyName) => {
       const service = getServiceName(resource.resourceType);
       const resourceType = getFriendlyResourceType(resource.resourceType);
       
@@ -430,7 +484,7 @@ const ResourceConsole: React.FC<ResourceConsoleProps> = ({ socket, sandboxStatus
   }
 
   // Show loading spinner during initialization or when loading resources for the first time
-  if ((initializing || (loading && (!resources || !resources.resources || resources.resources.length === 0))) && !deploymentInProgress) {
+  if ((initializing || (isLoading && (!resources || resources.length === 0))) && !deploymentInProgress) {
     return (
       <Container>
         <SpaceBetween direction="vertical" size="m">
@@ -460,7 +514,7 @@ const ResourceConsole: React.FC<ResourceConsoleProps> = ({ socket, sandboxStatus
           </Box>
           
           {/* Continue to show resources even when stopped */}
-          {!loading && resources && Object.keys(groupedResources).length > 0 && (
+          {!isLoading && resources && Object.keys(groupedResources).length > 0 && (
             <ResourceDisplay 
               groupedResources={groupedResources}
               columnDefinitions={columnDefinitions}
@@ -483,7 +537,7 @@ const ResourceConsole: React.FC<ResourceConsoleProps> = ({ socket, sandboxStatus
             <StatusIndicator type="in-progress">Sandbox is deploying</StatusIndicator>
             <TextContent>
               <p>The sandbox is currently being deployed. This may take a few minutes.</p>
-              {resources && resources.resources && resources.resources.length > 0 && (
+              {resources && resources.length > 0 && (
                 <p>Showing resources from the previous deployment.</p>
               )}
             </TextContent>
@@ -491,7 +545,7 @@ const ResourceConsole: React.FC<ResourceConsoleProps> = ({ socket, sandboxStatus
           </Box>
           
           {/* Show resources if available, even during deployment */}
-          {resources && resources.resources && resources.resources.length > 0 && (
+          {resources && resources.length > 0 && (
             <ResourceDisplay 
               groupedResources={groupedResources}
               columnDefinitions={columnDefinitions}
@@ -540,6 +594,36 @@ const ResourceConsole: React.FC<ResourceConsoleProps> = ({ socket, sandboxStatus
       variant="default"
       fitHeight
     >
+      {/* Friendly Name Edit Modal */}
+      <Modal
+        visible={editingResource !== null}
+        onDismiss={() => setEditingResource(null)}
+        header="Edit Resource Name"
+        footer={
+          <Box float="right">
+            <SpaceBetween direction="horizontal" size="xs">
+              <Button variant="link" onClick={() => setEditingResource(null)}>Cancel</Button>
+              <Button variant="link" onClick={handleRemoveFriendlyName}>Reset to Default</Button>
+              <Button variant="primary" onClick={handleSaveFriendlyName}>Save</Button>
+            </SpaceBetween>
+          </Box>
+        }
+      >
+        <SpaceBetween direction="vertical" size="m">
+          <FormField label="Resource ID">
+            <div>{editingResource?.physicalResourceId}</div>
+          </FormField>
+          <FormField label="Resource Type">
+            <div>{editingResource?.resourceType}</div>
+          </FormField>
+          <FormField label="Custom Name">
+            <Input
+              value={editingFriendlyName}
+              onChange={({ detail }) => setEditingFriendlyName(detail.value)}
+            />
+          </FormField>
+        </SpaceBetween>
+      </Modal>
       <SpaceBetween direction="vertical" size="l">
         <Header
           variant="h1"
@@ -628,7 +712,7 @@ const ResourceConsole: React.FC<ResourceConsoleProps> = ({ socket, sandboxStatus
           {showLogViewer && selectedLogResource && (
             <ResourceLogPanel
               resourceId={selectedLogResource.physicalResourceId}
-              resourceName={selectedLogResource.friendlyName || selectedLogResource.logicalResourceId}
+              resourceName={getResourceDisplayName(selectedLogResource)}
               resourceType={selectedLogResource.resourceType}
               onClose={() => {
                 setShowLogViewer(false);
@@ -638,6 +722,7 @@ const ResourceConsole: React.FC<ResourceConsoleProps> = ({ socket, sandboxStatus
                 }
               }}
               socket={socket}
+              deploymentInProgress={deploymentInProgress}
             />
           )}
         </Grid>
@@ -648,7 +733,7 @@ const ResourceConsole: React.FC<ResourceConsoleProps> = ({ socket, sandboxStatus
 
 // Helper component to display resources
 interface ResourceDisplayProps {
-  groupedResources: Record<string, Record<string, Resource[]>>;
+  groupedResources: Record<string, Record<string, ResourceWithFriendlyName[]>>;
   columnDefinitions: ColumnDefinition[];
   emptyState: React.ReactNode;
   refreshResources: () => void;
@@ -713,8 +798,4 @@ const ResourceDisplay: React.FC<ResourceDisplayProps> = ({
   );
 };
         
-const ResourceConsoleWithLogs: React.FC<ResourceConsoleProps> = (props) => {
-  return <ResourceConsole {...props} />;
-};
-
-export default ResourceConsoleWithLogs;
+export default ResourceConsole;

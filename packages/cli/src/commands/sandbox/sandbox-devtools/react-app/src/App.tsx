@@ -4,6 +4,7 @@ import Header from './components/Header';
 import ResourceConsole from './components/ResourceConsole';
 import DeploymentProgress from './components/DeploymentProgress';
 import SandboxOptionsModal, { SandboxOptions } from './components/SandboxOptionsModal';
+import LogSettingsModal, { LogSettings } from './components/LogSettingsModal';
 import { io, Socket } from 'socket.io-client';
 import { SocketProvider } from './contexts/SocketContext';
 import { 
@@ -41,6 +42,9 @@ function App() {
   const [sandboxIdentifier, setSandboxIdentifier] = useState<string | undefined>(undefined);
   const [statusError, setStatusError] = useState<string | null>(null);
   const [showOptionsModal, setShowOptionsModal] = useState(false);
+  const [showSettingsModal, setShowSettingsModal] = useState(false);
+  const [logSettings, setLogSettings] = useState<LogSettings>({ maxLogSizeMB: 50 });
+  const [currentLogSizeMB, setCurrentLogSizeMB] = useState<number | undefined>(undefined);
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const statusRequestedRef = useRef<boolean>(false);
   // Filter out deployment progress messages from logs
@@ -173,6 +177,9 @@ function App() {
       
       // Request saved deployment progress
       socket.emit('getSavedDeploymentProgress');
+      
+      // Request log settings
+      socket.emit('getLogSettings');
     });
 
     // Handle connection errors
@@ -225,6 +232,17 @@ socket.on('reconnect_failed', () => {
         level: data.level,
         message: data.message
       }]);
+    });
+    
+    // Handle log settings response
+    socket.on('logSettings', (data) => {
+      console.log('Received log settings:', data);
+      if (data.maxLogSizeMB) {
+        setLogSettings({ maxLogSizeMB: data.maxLogSizeMB });
+      }
+      if (data.currentSizeMB !== undefined) {
+        setCurrentLogSizeMB(data.currentSizeMB);
+      }
     });
 
 
@@ -370,6 +388,30 @@ socket.on('reconnect_failed', () => {
       }]);
     }
   };
+  
+  const handleOpenSettings = () => {
+    // Request current log size before opening settings
+    if (socketRef.current) {
+      socketRef.current.emit('getLogSettings');
+    }
+    setShowSettingsModal(true);
+  };
+  
+  const handleSaveSettings = (settings: LogSettings) => {
+    if (socketRef.current) {
+      socketRef.current.emit('saveLogSettings', settings);
+      setLogSettings(settings);
+      setShowSettingsModal(false);
+      
+      // Add a log entry
+      setLogs(prev => [...prev, {
+        id: Date.now().toString(),
+        timestamp: new Date().toISOString(),
+        level: 'INFO',
+        message: `Log settings updated: Max size set to ${settings.maxLogSizeMB} MB`
+      }]);
+    }
+  };
 
   const mainContent = (
     <ContentLayout
@@ -383,6 +425,7 @@ socket.on('reconnect_failed', () => {
           onStopSandbox={stopSandbox}
           onDeleteSandbox={deleteSandbox}
           onStopDevTools={stopDevTools}
+          onOpenSettings={handleOpenSettings}
         />
       }
     >
@@ -449,6 +492,14 @@ socket.on('reconnect_failed', () => {
         visible={showOptionsModal}
         onDismiss={() => setShowOptionsModal(false)}
         onConfirm={handleStartSandboxWithOptions}
+      />
+      
+      <LogSettingsModal
+        visible={showSettingsModal}
+        onDismiss={() => setShowSettingsModal(false)}
+        onSave={handleSaveSettings}
+        initialSettings={logSettings}
+        currentSizeMB={currentLogSizeMB}
       />
     </SocketProvider>
   );

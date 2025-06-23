@@ -17,9 +17,20 @@ interface HeaderProps {
   onStopSandbox: () => void;
   onDeleteSandbox?: () => void;
   onStopDevTools?: () => void;
+  onOpenSettings?: () => void;
 }
 
-const Header = ({ connected, onClear, sandboxStatus, sandboxIdentifier, onStartSandbox, onStopSandbox, onDeleteSandbox, onStopDevTools }: HeaderProps) => {
+const Header = ({ 
+  connected, 
+  onClear, 
+  sandboxStatus, 
+  sandboxIdentifier, 
+  onStartSandbox, 
+  onStopSandbox, 
+  onDeleteSandbox, 
+  onStopDevTools,
+  onOpenSettings
+}: HeaderProps) => {
   const [isLoading, setIsLoading] = useState(false);
   const [statusCheckTimeout, setStatusCheckTimeout] = useState<number>(0);
 
@@ -145,6 +156,16 @@ const Header = ({ connected, onClear, sandboxStatus, sandboxIdentifier, onStartS
               disabled={!connected || sandboxStatus === 'nonexistent' || sandboxStatus === 'unknown' || isDeploying}
             >
               Delete Sandbox
+            </Button>
+          )}
+          {onOpenSettings && (
+            <Button 
+              onClick={onOpenSettings} 
+              iconName="settings"
+              variant="link"
+              disabled={!connected}
+            >
+              Settings
             </Button>
           )}
           <Button onClick={onClear} iconName="remove">Clear Logs</Button>

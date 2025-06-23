@@ -60,10 +60,10 @@
     "@aws-amplify/eslint-plugin-amplify-backend-rules": "^0.0.2",
     "@aws-sdk/client-amplify": "^3.750.0",
     "@aws-sdk/client-cloudformation": "^3.828.0",
-    "@aws-sdk/client-cloudwatch-logs": "^3.750.0",
+    "@aws-sdk/client-cloudwatch-logs": "^3.835.0",
     "@aws-sdk/client-cognito-identity-provider": "^3.750.0",
     "@aws-sdk/client-dynamodb": "^3.750.0",
-    "@aws-sdk/client-iam": "^3.750.0",
+    "@aws-sdk/client-iam": "^3.835.0",
     "@aws-sdk/client-s3": "^3.750.0",
     "@aws-sdk/client-ssm": "^3.750.0",
     "@changesets/cli": "^2.26.1",
@@ -119,6 +119,7 @@
     "*.md": "prettier --write"
   },
   "dependencies": {
+    "@aws-sdk/client-lambda": "^3.835.0",
     "cookie-signature": "1.0.6",
     "debounce-promise": "^3.1.2",
     "esbuild": "0.25.5",
