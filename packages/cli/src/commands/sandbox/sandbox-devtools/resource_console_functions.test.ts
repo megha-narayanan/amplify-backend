@@ -5,7 +5,15 @@ import {
   getAwsConsoleUrl,
   isGlobalService,
 } from './resource_console_functions.js';
-import { ResourceWithFriendlyName } from './sandbox_devtools_command.js';
+
+// Define the ResourceWithFriendlyName interface to match what's used in the code
+interface ResourceWithFriendlyName {
+  logicalResourceId: string;
+  physicalResourceId: string;
+  resourceType: string;
+  resourceStatus: string;
+  friendlyName: string;
+}
 
 // Test resources
 const testResources: ResourceWithFriendlyName[] = [

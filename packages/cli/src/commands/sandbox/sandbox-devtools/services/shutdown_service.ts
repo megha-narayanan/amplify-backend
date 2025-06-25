@@ -12,7 +12,7 @@ export class ShutdownService {
   private server: ReturnType<typeof createServer>;
   private logStreamingService: LogStreamingService;
   private storageManager: LocalStorageManager;
-  private sandbox: any; // Using any for now, should be replaced with proper type
+  private sandbox: any; 
   private getSandboxState: () => string;
 
   /**

@@ -42,28 +42,21 @@ export const useResourceManager = (
   const [region, setRegion] = useState<string | null>(null);
   const [backendName, setBackendName] = useState<string>('');
   
-  // Load resources when the socket or sandbox status changes
   useEffect(() => {
     if (!socket) return;
     
-    // Load custom friendly names
     socket.emit('getCustomFriendlyNames');
     
-    // Load resources
     const loadResources = () => {
       setIsLoading(true);
       setError(null);
       
-      // First try to load saved resources
       socket.emit('getSavedResources');
-      
-      // Then get the latest resources
       socket.emit('getDeployedBackendResources');
     };
     
     loadResources();
     
-    // Listen for saved resources
     const handleSavedResources = (data: any) => {
       if (data && data.resources) {
         setResources(data.resources);
@@ -121,7 +114,6 @@ export const useResourceManager = (
       setError(data.message);
     };
     
-    // Register event listeners
     socket.on('savedResources', handleSavedResources);
     socket.on('deployedBackendResources', handleDeployedBackendResources);
     socket.on('customFriendlyNames', handleCustomFriendlyNames);
@@ -129,7 +121,6 @@ export const useResourceManager = (
     socket.on('customFriendlyNameRemoved', handleCustomFriendlyNameRemoved);
     socket.on('error', handleError);
     
-    // Clean up event listeners
     return () => {
       socket.off('savedResources', handleSavedResources);
       socket.off('deployedBackendResources', handleDeployedBackendResources);
@@ -173,8 +164,8 @@ export const useResourceManager = (
    */
   const getResourceDisplayName = (resource: ResourceWithFriendlyName): string => {
     // Check if there's a custom friendly name
-    if (customFriendlyNames[resource.logicalResourceId]) {
-      return customFriendlyNames[resource.logicalResourceId];
+    if (customFriendlyNames[resource.physicalResourceId]) {
+      return customFriendlyNames[resource.physicalResourceId];
     }
     
     // Otherwise use the friendly name or logical ID

@@ -68,10 +68,10 @@ export class LocalStorageManager {
    */
   saveDeploymentProgress(events: any[]): void {
     try {
-      printer.log(`LocalStorageManager: Saving deployment progress to ${this.deploymentProgressFile}`, LogLevel.INFO);
-      printer.log(`LocalStorageManager: Number of events: ${events.length}`, LogLevel.INFO);
+      printer.log(`LocalStorageManager: Saving deployment progress to ${this.deploymentProgressFile}`, LogLevel.DEBUG);
+      printer.log(`LocalStorageManager: Number of events: ${events.length}`, LogLevel.DEBUG);
       fs.writeFileSync(this.deploymentProgressFile, JSON.stringify(events, null, 2));
-      printer.log(`LocalStorageManager: Deployment progress saved successfully`, LogLevel.INFO);
+      printer.log(`LocalStorageManager: Deployment progress saved successfully`, LogLevel.DEBUG);
     } catch (error) {
       printer.log(`LocalStorageManager: Error saving deployment progress: ${error}`, LogLevel.ERROR);
       if (error instanceof Error) {
@@ -129,6 +129,20 @@ export class LocalStorageManager {
       printer.log(`Error loading resources: ${error}`, LogLevel.ERROR);
     }
     return null;
+  }
+  
+  /**
+   * Clears saved resources by deleting the resources file
+   */
+  clearResources(): void {
+    try {
+      if (fs.existsSync(this.resourcesFile)) {
+        fs.unlinkSync(this.resourcesFile);
+        printer.log(`LocalStorageManager: Cleared saved resources`, LogLevel.INFO);
+      }
+    } catch (error) {
+      printer.log(`Error clearing resources: ${error}`, LogLevel.ERROR);
+    }
   }
 
   /**
@@ -233,7 +247,6 @@ export class LocalStorageManager {
       
       const filePath = path.join(this.cloudWatchLogsDir, `${resourceId}.json`);
       printer.log(`LocalStorageManager: Saving CloudWatch logs for resource ${resourceId} to ${filePath}`, LogLevel.DEBUG);
-      printer.log(`LocalStorageManager: Number of log entries: ${logs.length}`, LogLevel.INFO);
       fs.writeFileSync(filePath, JSON.stringify(logs, null, 2));
       printer.log(`LocalStorageManager: CloudWatch logs saved successfully for resource ${resourceId}`, LogLevel.DEBUG);
     } catch (error) {
@@ -254,10 +267,8 @@ export class LocalStorageManager {
       const filePath = path.join(this.cloudWatchLogsDir, `${resourceId}.json`);
       printer.log(`LocalStorageManager: Loading CloudWatch logs for resource ${resourceId} from ${filePath}`, LogLevel.DEBUG);
       if (fs.existsSync(filePath)) {
-        printer.log(`LocalStorageManager: CloudWatch logs file exists for resource ${resourceId}`, LogLevel.DEBUG);
         const data = fs.readFileSync(filePath, 'utf8');
         const logs = JSON.parse(data);
-        printer.log(`LocalStorageManager: Loaded ${logs.length} CloudWatch log entries for resource ${resourceId}`, LogLevel.DEBUG);
         return logs;
       }
       printer.log(`LocalStorageManager: CloudWatch logs file does not exist for resource ${resourceId}`, LogLevel.DEBUG);
@@ -278,9 +289,7 @@ export class LocalStorageManager {
     try {
       printer.log(`LocalStorageManager: Getting resources with CloudWatch logs from ${this.cloudWatchLogsDir}`, LogLevel.DEBUG);
       if (fs.existsSync(this.cloudWatchLogsDir)) {
-        printer.log(`LocalStorageManager: CloudWatch logs directory exists`, LogLevel.DEBUG);
         const files = fs.readdirSync(this.cloudWatchLogsDir);
-        printer.log(`LocalStorageManager: Found ${files.length} files in CloudWatch logs directory`, LogLevel.DEBUG);
         const resourceIds = files
           .filter(file => file.endsWith('.json'))
           .map(file => file.replace('.json', ''));
@@ -304,11 +313,9 @@ export class LocalStorageManager {
    */
   appendCloudWatchLog(resourceId: string, logEntry: any): void {
     try {
-      printer.log(`LocalStorageManager: Appending CloudWatch log for resource ${resourceId}`, LogLevel.INFO);
       const logs = this.loadCloudWatchLogs(resourceId);
       logs.push(logEntry);
       this.saveCloudWatchLogs(resourceId, logs);
-      printer.log(`LocalStorageManager: CloudWatch log appended successfully for resource ${resourceId}`, LogLevel.INFO);
     } catch (error) {
       printer.log(`LocalStorageManager: Error appending CloudWatch log for resource ${resourceId}: ${error}`, LogLevel.ERROR);
       if (error instanceof Error) {
@@ -537,13 +544,11 @@ export class LocalStorageManager {
       // Test write permissions by creating a test file
       const testFilePath = path.join(this.baseDir, 'test-write-permissions.txt');
       try {
-        printer.log(`LocalStorageManager: Testing write permissions with file: ${testFilePath}`, LogLevel.DEBUG);
         fs.writeFileSync(testFilePath, 'Test write permissions');
         printer.log(`LocalStorageManager: Write permissions test successful`, LogLevel.DEBUG);
         
         // Clean up test file
         fs.unlinkSync(testFilePath);
-        printer.log(`LocalStorageManager: Test file removed`, LogLevel.INFO);
       } catch (writeError) {
         printer.log(`LocalStorageManager: Write permissions test failed: ${writeError}`, LogLevel.ERROR);
       }
@@ -621,7 +626,7 @@ export class LocalStorageManager {
         }
         
         fs.unlinkSync(file.path);
-        printer.log(`LocalStorageManager: Removed old log file: ${file.path}`, LogLevel.INFO);
+        printer.log(`LocalStorageManager: Removed old log file: ${file.path}`, LogLevel.DEBUG);
       }
     } catch (error) {
       printer.log(`LocalStorageManager: Error pruning old logs: ${error}`, LogLevel.ERROR);

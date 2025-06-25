@@ -6,7 +6,6 @@ import DeploymentProgress from './components/DeploymentProgress';
 import SandboxOptionsModal, { SandboxOptions } from './components/SandboxOptionsModal';
 import LogSettingsModal, { LogSettings } from './components/LogSettingsModal';
 import { io, Socket } from 'socket.io-client';
-import { SocketProvider } from './contexts/SocketContext';
 import { 
   AppLayout, 
   Tabs, 
@@ -47,29 +46,12 @@ function App() {
   const [currentLogSizeMB, setCurrentLogSizeMB] = useState<number | undefined>(undefined);
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const statusRequestedRef = useRef<boolean>(false);
-  // Filter out deployment progress messages from logs
-  const isDeploymentProgressMessage = (message: string): boolean => {
-    return (
-      message.includes('_IN_PROGRESS') ||
-      message.includes('CREATE_') ||
-      message.includes('DELETE_') ||
-      message.includes('UPDATE_') ||
-      message.includes('Deployment in progress')
-    );
-  };
 
-  // Filter logs to exclude deployment progress messages
-  const filteredLogs = logs.filter(log => !isDeploymentProgressMessage(log.message));
-  
-  // Determine if deployment is in progress based on sandbox status
   const deploymentInProgress = sandboxStatus === 'deploying';
   
-  // Add debugging for state changes
-  useEffect(() => {
-    console.log(`[CLIENT] App: sandboxStatus state changed to: ${sandboxStatus}`);
-    console.log(`[CLIENT] App: deploymentInProgress is now: ${deploymentInProgress}`);
-    console.log(`[CLIENT] App: Component will re-render with new status`);
-  }, [sandboxStatus, deploymentInProgress]);
+  const clearLogs = () => {
+    setLogs([]);
+  };
 
   useEffect(() => {
     // Connect to Socket.IO server using the current hostname and port
@@ -85,27 +67,23 @@ function App() {
     socket.on('sandboxStatus', (data: SandboxStatusData) => {
       console.log(`[CLIENT] Status update received: ${data.status}`, data);
       
-      // Force state update with functional update to avoid stale closures
       setSandboxStatus(prevStatus => {
         console.log(`[CLIENT] Updating sandboxStatus from ${prevStatus} to ${data.status}`);
         return data.status;
       });
       
-      // Update the sandbox identifier if provided
       if (data.identifier) {
         setSandboxIdentifier(prevId => {
           console.log(`[CLIENT] Updating sandboxIdentifier from ${prevId} to ${data.identifier}`);
           return data.identifier;
         });
       } else if (data.status === 'nonexistent') {
-        // Clear identifier for nonexistent sandbox
         setSandboxIdentifier(prevId => {
           console.log(`[CLIENT] Clearing sandboxIdentifier from ${prevId}`);
           return undefined;
         });
       }
       
-      // Handle deployment completion information
       if (data.deploymentCompleted) {
         console.log('[CLIENT] Deployment completed event received via sandboxStatus:', data);
         
@@ -129,8 +107,6 @@ function App() {
       } else {
         setStatusError(null);
         
-        // Only add a general status log if this isn't a deployment completion event
-        // to avoid duplicate logs
         if (!data.deploymentCompleted) {
           setLogs(prev => [...prev, {
             id: Date.now().toString(),
@@ -159,7 +135,6 @@ function App() {
         socket.emit('getSandboxStatus');
         statusRequestedRef.current = true;
         
-        // Add a log entry
         setLogs(prev => [...prev, {
           id: Date.now().toString(),
           timestamp: new Date().toISOString(),
@@ -175,10 +150,8 @@ function App() {
         }]);
       }
       
-      // Request saved deployment progress
       socket.emit('getSavedDeploymentProgress');
       
-      // Request log settings
       socket.emit('getLogSettings');
     });
 
@@ -205,24 +178,24 @@ function App() {
       }]);
     });
 
-// Add reconnection logging
-socket.on('reconnect', (attemptNumber) => {
-  console.log(`Socket reconnected after ${attemptNumber} attempts`);
-  // Request sandbox status after reconnection
-  socket.emit('getSandboxStatus');
-});
+    // Add reconnection logging
+    socket.on('reconnect', (attemptNumber) => {
+      console.log(`Socket reconnected after ${attemptNumber} attempts`);
+      // Request sandbox status after reconnection
+      socket.emit('getSandboxStatus');
+    });
 
-socket.on('reconnect_attempt', (attemptNumber) => {
-  console.log(`Socket reconnection attempt ${attemptNumber}`);
-});
+    socket.on('reconnect_attempt', (attemptNumber) => {
+      console.log(`Socket reconnection attempt ${attemptNumber}`);
+    });
 
-socket.on('reconnect_error', (error) => {
-  console.log('Socket reconnection error:', error);
-});
+    socket.on('reconnect_error', (error) => {
+      console.log('Socket reconnection error:', error);
+    });
 
-socket.on('reconnect_failed', () => {
-  console.log('Socket reconnection failed');
-});
+    socket.on('reconnect_failed', () => {
+      console.log('Socket reconnection failed');
+    });
 
     // Handle log messages
     socket.on('log', (data) => {
@@ -281,6 +254,8 @@ socket.on('reconnect_failed', () => {
     // Clean up on unmount
     return () => {
       clearInterval(pingInterval);
+      // Clear logs when DevTools UI is closed
+      clearLogs();
       socket.disconnect();
     };
   }, []);
@@ -321,11 +296,6 @@ socket.on('reconnect_failed', () => {
   }, [sandboxStatus, connected]);
   
 
-
-  const clearLogs = () => {
-    setLogs([]);
-  };
-
   const startSandbox = () => {
     // Show the options modal instead of starting the sandbox directly
     setShowOptionsModal(true);
@@ -333,13 +303,10 @@ socket.on('reconnect_failed', () => {
   
   const handleStartSandboxWithOptions = (options: SandboxOptions) => {
     if (socketRef.current) {
-      // Close the modal
       setShowOptionsModal(false);
       
-      // Emit the startSandbox event with options
       socketRef.current.emit('startSandboxWithOptions', options);
-      
-      // Log the action with options details
+    
       const optionsText = Object.keys(options).length > 0 
         ? ` with options: ${JSON.stringify(options)}`
         : '';
@@ -403,7 +370,6 @@ socket.on('reconnect_failed', () => {
       setLogSettings(settings);
       setShowSettingsModal(false);
       
-      // Add a log entry
       setLogs(prev => [...prev, {
         id: Date.now().toString(),
         timestamp: new Date().toISOString(),
@@ -418,7 +384,6 @@ socket.on('reconnect_failed', () => {
       header={
         <Header 
           connected={connected} 
-          onClear={clearLogs} 
           sandboxStatus={sandboxStatus}
           sandboxIdentifier={sandboxIdentifier}
           onStartSandbox={startSandbox}
@@ -462,7 +427,7 @@ socket.on('reconnect_failed', () => {
               content: (
                 <SpaceBetween size="l">
                   <DeploymentProgress socket={socketRef.current} visible={true} status={sandboxStatus} />
-                  <ConsoleViewer logs={filteredLogs} />
+                  <ConsoleViewer logs={logs} />
                 </SpaceBetween>
               )
             },
@@ -478,12 +443,12 @@ socket.on('reconnect_failed', () => {
   );
 
   return (
-    <SocketProvider socket={socketRef.current}>
+    <>
       <AppLayout
         content={mainContent}
         navigationHide={true}
         toolsHide={true}
-        maxContentWidth={1800}
+        maxContentWidth={2000}
         contentType="default"
         headerSelector="#header"
       />
@@ -498,10 +463,11 @@ socket.on('reconnect_failed', () => {
         visible={showSettingsModal}
         onDismiss={() => setShowSettingsModal(false)}
         onSave={handleSaveSettings}
+        onClear={clearLogs} 
         initialSettings={logSettings}
         currentSizeMB={currentLogSizeMB}
       />
-    </SocketProvider>
+    </>
   );
 }
 

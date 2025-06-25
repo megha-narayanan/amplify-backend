@@ -25,7 +25,7 @@ export function createFriendlyName(
   // Fall back to the basic transformation
   let name = logicalId.replace(/^amplify/, '').replace(/^Amplify/, '');
   name = name.replace(/([A-Z])/g, ' $1').trim();
-  name = name.replace(/[0-9A-F]{8}$/, '');
+  name = name.replace(/[0-9]+[A-Z]*[0-9]*/, '');
   
   return name || logicalId;
 }
@@ -53,7 +53,7 @@ function getFriendlyNameFromNestedStackName(stackName: string): string | undefin
   const parts = stackName.split('-');
   
   if (parts && parts.length === 7 && parts[3] === 'sandbox') {
-    return parts[5].slice(0, -8) + ' stack';
+    return parts[5].slice(0, -10) + ' stack';
   } else if (parts && parts.length === 5 && parts[3] === 'sandbox') {
     return 'root stack';
   }

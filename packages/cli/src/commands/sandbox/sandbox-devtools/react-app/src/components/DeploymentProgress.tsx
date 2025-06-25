@@ -51,7 +51,6 @@ const DeploymentProgress: React.FC<DeploymentProgressProps> = ({
   
   // Parse deployment progress message to extract structured information
   const parseDeploymentMessage = (message: string): ResourceStatus | null => {
-    // Try to parse CloudFormation event format: "4:14:26 PM | DELETE_IN_PROGRESS | CloudFormation:Stack | root stack"
     const cfnMatch = message.match(/(\d+:\d+:\d+\s+[AP]M)\s+\|\s+([A-Z_]+)\s+\|\s+([^|]+)\s+\|\s+(.+)/);
     if (cfnMatch) {
       const timestamp = cfnMatch[1].trim();
@@ -74,16 +73,15 @@ const DeploymentProgress: React.FC<DeploymentProgressProps> = ({
     return null;
   };
   
-  // Get spinner status based on resource status
+
   const getSpinnerStatus = (status: string): boolean => {
     return status.includes('IN_PROGRESS');
   };
   
-  // Listen for deployment events
+
   useEffect(() => {
     if (!socket) return;
     
-    // Clear events if we're starting a new deployment
     if (status === 'deploying') {
       setEvents([]);
       setResourceStatuses({});
@@ -94,17 +92,17 @@ const DeploymentProgress: React.FC<DeploymentProgressProps> = ({
     socket.emit('getSavedDeploymentProgress');
     
     const handleDeploymentInProgress = (data: { message: string; timestamp: string }) => {
-      // Try to parse the message as a CloudFormation event
+
       const resourceStatus = parseDeploymentMessage(data.message);
       
       if (resourceStatus) {
-        // Update the resource status
+
         setResourceStatuses(prev => ({
           ...prev,
           [resourceStatus.key]: resourceStatus
         }));
         
-        // Add to events list
+
         setEvents(prev => [
           ...prev, 
           {
@@ -126,34 +124,29 @@ const DeploymentProgress: React.FC<DeploymentProgressProps> = ({
       }
     };
     
-    // DeploymentProgress now gets sandbox status as a prop, no need to listen for sandboxStatus events
-    
-    // Handle saved deployment progress events
+
     const handleSavedDeploymentProgress = (savedEvents: Array<{ message: string; timestamp: string }>) => {
       console.log('Received saved deployment progress events:', savedEvents.length);
       
-      // If we're not deploying, process the saved events
       if (status !== 'deploying') {
         // Process each saved event
         const newResourceStatuses: Record<string, ResourceStatus> = {};
         const processedEvents: DeploymentEvent[] = [];
         
         savedEvents.forEach(data => {
-          // Try to parse the message as a CloudFormation event
+
           const resourceStatus = parseDeploymentMessage(data.message);
           
           if (resourceStatus) {
-            // Update the resource status
+
             newResourceStatuses[resourceStatus.key] = resourceStatus;
             
-            // Add to events list
             processedEvents.push({
               message: data.message,
               timestamp: data.timestamp || new Date().toISOString(),
               resourceStatus
             });
           } else {
-            // Add as a generic event
             processedEvents.push({
               message: data.message,
               timestamp: data.timestamp || new Date().toISOString(),

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { useSocket } from '../contexts/SocketContext';
+import { Socket } from 'socket.io-client';
 import {
   Box,
   Button,
@@ -18,14 +18,14 @@ interface ResourceLogViewerProps {
   resourceId: string;
   resourceName: string;
   onClose: () => void;
+  socket: Socket | null;
 }
 
-const ResourceLogViewer: React.FC<ResourceLogViewerProps> = ({ resourceId, resourceName, onClose }) => {
+const ResourceLogViewer: React.FC<ResourceLogViewerProps> = ({ resourceId, resourceName, onClose, socket }) => {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [status, setStatus] = useState<'inactive' | 'starting' | 'active' | 'error'>('inactive');
   const [error, setError] = useState<string | null>(null);
   const logContainerRef = useRef<HTMLDivElement>(null);
-  const socket = useSocket();
 
   useEffect(() => {
     if (!socket) return;

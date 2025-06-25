@@ -1,9 +1,15 @@
 import { LogLevel, printer } from '@aws-amplify/cli-core';
 import { Server, Socket } from 'socket.io';
 import { CloudWatchLogsClient, DescribeLogStreamsCommand, GetLogEventsCommand } from '@aws-sdk/client-cloudwatch-logs';
+import { CloudFormationClient } from '@aws-sdk/client-cloudformation';
+import { DeployedBackendClientFactory } from '@aws-amplify/deployed-backend-client';
+import { S3Client } from '@aws-sdk/client-s3';
+import { AmplifyClient } from '@aws-sdk/client-amplify';
 import { LocalStorageManager } from '../local_storage_manager.js';
 import { LogStreamingService } from './log_streaming_service.js';
 import { getLogGroupName } from '../utils/logging_utils.js';
+import { createFriendlyName } from '../utils/cloudformation_utils.js';
+import { ResourceWithFriendlyName } from '../resource_console_functions.js';
 
 /**
  * Interface for socket event data types
@@ -73,6 +79,7 @@ export class SocketHandlerService {
   private getSandboxState: () => string;
   private backendId: { name: string };
   private shutdownService: any; // Using any for now, should be replaced with proper type
+  private backendClient: any; // Client for fetching backend resources
 
   /**
    * Creates a new SocketHandlerService
@@ -84,7 +91,8 @@ export class SocketHandlerService {
     sandbox: any,
     getSandboxState: () => string,
     backendId: { name: string },
-    shutdownService: any
+    shutdownService: any,
+    backendClient?: any
   ) {
     this.io = io;
     this.storageManager = storageManager;
@@ -93,6 +101,7 @@ export class SocketHandlerService {
     this.getSandboxState = getSandboxState;
     this.backendId = backendId;
     this.shutdownService = shutdownService;
+    this.backendClient = backendClient
   }
 
   /**
@@ -139,6 +148,25 @@ export class SocketHandlerService {
    */
   private async handleToggleResourceLogging(socket: Socket, data: SocketEvents['toggleResourceLogging']): Promise<void> {
     printer.log(`Toggle logging for ${data.resourceId}, startLogging=${data.startLogging}`, LogLevel.DEBUG);
+    
+    // Run diagnostics first to check AWS service health
+    try {
+      const diagnosticResults = await this.logStreamingService.runDiagnostics();
+      printer.log(`AWS service diagnostics: ${JSON.stringify(diagnosticResults)}`, LogLevel.DEBUG);
+      
+      // If any service is not accessible, notify the client
+      if (!diagnosticResults.lambdaServiceAccessible || 
+          !diagnosticResults.cloudWatchLogsServiceAccessible || 
+          !diagnosticResults.iamServiceAccessible) {
+        socket.emit('logStreamError', {
+          resourceId: data.resourceId,
+          error: 'AWS service connectivity issues detected. Check your AWS credentials and network connectivity.'
+        });
+        return;
+      }
+    } catch (error) {
+      printer.log(`Error running diagnostics: ${error}`, LogLevel.ERROR);
+    }
     
     if (data.startLogging) {
       // Start logging if not already active
@@ -326,6 +354,10 @@ export class SocketHandlerService {
         printer.log(`Stopped log polling for resource ${data.resourceId}`, LogLevel.INFO);
       }
       
+      // Make sure we don't lose any logs when stopping
+      const existingLogs = this.storageManager.loadCloudWatchLogs(data.resourceId);
+      printer.log(`DEBUG: Found ${existingLogs.length} existing logs for ${data.resourceId} before stopping`, LogLevel.DEBUG);
+      
       // Save the logging state to local storage
       printer.log(`DEBUG: Saving inactive logging state for resource ${data.resourceId}`, LogLevel.DEBUG);
       this.storageManager.saveResourceLoggingState(data.resourceId, false);
@@ -334,6 +366,12 @@ export class SocketHandlerService {
       socket.emit('logStreamStatus', {
         resourceId: data.resourceId,
         status: 'stopped'
+      });
+      
+      // Send the saved logs back to the client to ensure they're not lost
+      socket.emit('savedResourceLogs', {
+        resourceId: data.resourceId,
+        logs: existingLogs
       });
       
       // Also broadcast to all clients to ensure UI is updated everywhere
@@ -378,6 +416,7 @@ export class SocketHandlerService {
   private handleGetSavedResourceLogs(socket: Socket, data: SocketEvents['getSavedResourceLogs']): void {
     printer.log(`DEBUG: getSavedResourceLogs event received for ${data.resourceId}`, LogLevel.DEBUG);
     const logs = this.storageManager.loadCloudWatchLogs(data.resourceId);
+    printer.log(`DEBUG: Found ${logs.length} saved logs for ${data.resourceId}`, LogLevel.DEBUG);
     socket.emit('savedResourceLogs', {
       resourceId: data.resourceId,
       logs
@@ -504,39 +543,240 @@ export class SocketHandlerService {
     // Broadcast to all clients
     this.io.emit('deploymentInProgress', data);
   }
+  
+  /**
+   * Fetches backend resources and processes them
+   * @returns The processed resources or null if there was an error
+   */
+  private async fetchBackendResources(): Promise<Record<string, any> | null> {
+    try {
+      // Get the current sandbox state
+      const status = this.getSandboxState();
+      
+      // If sandbox is not running, don't try to fetch resources
+      if (status !== 'running') {
+        printer.log(`Sandbox is not running (status: ${status}), cannot fetch resources`, LogLevel.DEBUG);
+        return null;
+      }
+      
+      printer.log('Fetching backend metadata...', LogLevel.DEBUG);
+      const data = await this.backendClient.getBackendMetadata(this.backendId);
+      printer.log(`Successfully fetched backend metadata with ${data.resources?.length || 0} resources`, LogLevel.INFO);
+
+      const cfnClient = new CloudFormationClient();
+      const regionValue = cfnClient.config.region;
+
+      let region = null;
+
+      try {
+        if (typeof regionValue === 'function') {
+          if (regionValue.constructor.name === 'AsyncFunction') {
+            region = await regionValue();
+          } else {
+            region = regionValue();
+          }
+        } else if (regionValue) {
+          region = String(regionValue);
+        }
+
+        // Final check to ensure region is a string
+        if (region && typeof region !== 'string') {
+          region = String(region);
+        }
+      } catch (error) {
+        printer.log('Error processing region: ' + error, LogLevel.ERROR);
+        region = null;
+      }
+
+      // Process resources and add friendly names
+      const resourcesWithFriendlyNames = data.resources.map((resource: any) => {
+        const logicalId = resource.logicalResourceId || '';
+        let resourceType = resource.resourceType || '';
+        
+        // Remove CUSTOM:: prefix from resource type
+        if (resourceType.startsWith('CUSTOM::')) {
+          resourceType = resourceType.substring(8); // Remove "CUSTOM::" (8 characters)
+        } else if (resourceType.startsWith('Custom::')) {
+          resourceType = resourceType.substring(8); // Remove "Custom::" (8 characters)
+        }
+        
+        // Check if the resource has metadata with a construct path
+        const metadata = 'metadata' in resource && 
+                        typeof resource.metadata === 'object' && 
+                        resource.metadata !== null && 
+                        'constructPath' in resource.metadata ? { 
+          constructPath: resource.metadata.constructPath as string
+        } : undefined;
+        
+        return {
+          ...resource,
+          resourceType: resourceType,
+          friendlyName: createFriendlyName(logicalId, metadata),
+        } as ResourceWithFriendlyName;
+      });
+
+      // Add region and resources with friendly names to the data
+      const enhancedData = {
+        ...data,
+        region,
+        resources: resourcesWithFriendlyNames,
+        status
+      };
+      
+      // Save resources to local storage for persistence
+      this.storageManager.saveResources(enhancedData);
+      
+      return enhancedData;
+    } catch (error) {
+      const errorMessage = String(error);
+      printer.log(`Error fetching backend resources: ${errorMessage}`, LogLevel.ERROR);
+      throw error;
+    }
+  }
 
   /**
    * Handles the AMPLIFY_CFN_PROGRESS_UPDATE event
    */
-  private handleAmplifyCloudFormationProgressUpdate(socket: Socket, data: SocketEvents['AMPLIFY_CFN_PROGRESS_UPDATE']): void {
+  private async handleAmplifyCloudFormationProgressUpdate(socket: Socket, data: SocketEvents['AMPLIFY_CFN_PROGRESS_UPDATE']): Promise<void> {
     printer.log(`CloudFormation progress update received`, LogLevel.DEBUG);
     // Extract CloudFormation events from the message
     const cfnEvents = this.extractCloudFormationEvents(data.message);
     
+    // Check if any event indicates deployment completion
+    let deploymentCompleted = false;
+    
     // Send each event to the client
-    cfnEvents.forEach(event => {
+    for (const event of cfnEvents) {
       if (event) {
         this.io.emit('deploymentInProgress', {
           message: event,
           timestamp: new Date().toISOString()
         });
+        
+        // Check if this event indicates stack completion
+        // Look specifically for the root stack completion which indicates the entire deployment is done
+        if ((event.includes('CREATE_COMPLETE') || event.includes('UPDATE_COMPLETE')) && 
+            event.includes('AWS::CloudFormation::Stack')) {
+          printer.log('Detected CloudFormation stack completion event', LogLevel.INFO);
+          deploymentCompleted = true;
+        }
       }
-    });
+    }
+    
+    // If deployment completed, clear resources
+    if (deploymentCompleted) {
+      this.storageManager.clearResources();
+    }
   }
 
   /**
    * Handles the getDeployedBackendResources event
    */
   private async handleGetDeployedBackendResources(socket: Socket): Promise<void> {
-    // This method is complex and depends on external services
-    // For now, we'll just emit a placeholder response
-    socket.emit('deployedBackendResources', {
-      name: this.backendId.name,
-      status: this.getSandboxState(),
-      resources: [],
-      region: null,
-      message: 'Resource fetching not implemented in this handler yet'
-    });
+    try {
+      printer.log('Fetching deployed backend resources...', LogLevel.INFO);
+      
+      // Get the current sandbox state
+      const status = this.getSandboxState();
+      
+      // Try to use saved resources first, regardless of sandbox state
+      // Resources only change after deployments, which we handle separately
+      const savedResources = this.storageManager.loadResources();
+      if (savedResources) {
+        printer.log('Found saved resources, returning them', LogLevel.INFO);
+        socket.emit('deployedBackendResources', {
+          ...savedResources,
+          status
+        });
+        return;
+      }
+      
+      // If no saved resources, handle based on sandbox state
+      if (status === 'running') {
+        printer.log('No saved resources found and sandbox is running, fetching resources', LogLevel.INFO);
+        try {
+          const enhancedData = await this.fetchBackendResources();
+          
+          if (enhancedData) {
+            socket.emit('deployedBackendResources', enhancedData);
+            return;
+          }
+        } catch (error) {
+          const errorMessage = String(error);
+          printer.log(`Error getting backend resources: ${errorMessage}`, LogLevel.ERROR);
+          
+          // Check if this is a deployment in progress error
+          if (errorMessage.includes('deployment is in progress')) {
+            socket.emit('deployedBackendResources', {
+              name: this.backendId.name,
+              status: 'deploying',
+              resources: [],
+              region: null,
+              message: 'Sandbox deployment is in progress. Resources will update when deployment completes.'
+            });
+          } else if (errorMessage.includes('does not exist')) {
+            socket.emit('deployedBackendResources', {
+              name: this.backendId.name,
+              status: 'nonexistent',
+              resources: [],
+              region: null,
+              message: 'No sandbox exists. Please create a sandbox first.'
+            });
+          } else {
+            socket.emit('deployedBackendResources', {
+              name: this.backendId.name,
+              status: 'error',
+              resources: [],
+              region: null,
+              message: `Error fetching resources: ${errorMessage}`,
+              error: errorMessage
+            });
+          }
+          return;
+        }
+      } else if (status === 'stopped' || status === 'deploying') {
+        // For stopped sandbox with no saved resources, return basic info
+        printer.log('Sandbox is stopped and no saved resources found', LogLevel.INFO);
+        socket.emit('deployedBackendResources', {
+          name: this.backendId.name,
+          status: status,
+          resources: [],
+          region: null,
+          message: 'Sandbox is not running and no saved resources were found. Start the sandbox to see resources.'
+        });
+        return;
+      } else if (status === 'nonexistent') {
+        // For nonexistent sandbox, return appropriate message
+        socket.emit('deployedBackendResources', {
+          name: this.backendId.name,
+          status: 'nonexistent',
+          resources: [],
+          region: null,
+          message: 'No sandbox exists. Please create a sandbox first.'
+        });
+        return;
+      }
+      
+      // If we get here, something unexpected happened
+      socket.emit('deployedBackendResources', {
+        name: this.backendId.name,
+        status: status || 'unknown',
+        resources: [],
+        region: null,
+        message: `Could not determine sandbox resources. Status: ${status}`
+      });
+    } catch (error) {
+      printer.log(`Error checking sandbox status: ${error}`, LogLevel.ERROR);
+      // Ensure we send a consistent response type even for unexpected errors
+      socket.emit('deployedBackendResources', {
+        name: this.backendId.name,
+        status: 'error',
+        resources: [],
+        region: null,
+        message: `Error checking sandbox status: ${error}`,
+        error: String(error)
+      });
+    }
   }
 
   /**
@@ -566,38 +806,107 @@ export class SocketHandlerService {
   /**
    * Handles the startSandboxWithOptions event
    */
-  private async handleStartSandboxWithOptions(socket: Socket, options: SocketEvents['startSandboxWithOptions']): Promise<void> {
-    // This method is complex and depends on external services
-    // For now, we'll just emit a placeholder response
+private async handleStartSandboxWithOptions(socket: Socket, options: SocketEvents['startSandboxWithOptions']): Promise<void> {
+  try {
+    printer.log(`Starting sandbox with options: ${JSON.stringify(options)}`, LogLevel.INFO);
+    
+    // Emit status update to indicate we're starting
     socket.emit('sandboxStatus', { 
-      status: 'running',
-      identifier: options.identifier || this.backendId.name
+      status: 'deploying',
+      identifier: options.identifier || this.backendId.name,
+      message: 'Starting sandbox...'
+    });
+    
+    // Prepare sandbox options
+    const sandboxOptions = {
+      dir: options.dirToWatch || './amplify',
+      exclude: options.exclude ? options.exclude.split(',') : undefined,
+      identifier: options.identifier,
+      format: options.outputsFormat as any,
+      watchForChanges: !options.once,
+      functionStreamingOptions: {
+        enabled: options.streamFunctionLogs || false,
+        logsFilters: options.logsFilter ? options.logsFilter.split(',') : undefined,
+        logsOutFile: options.logsOutFile
+      }
+    };
+    
+    // Actually start the sandbox
+    await this.sandbox.start(sandboxOptions);
+    
+    // The sandbox will emit events that update the UI status
+    printer.log('Sandbox start command issued successfully', LogLevel.DEBUG);
+    
+  } catch (error) {
+    printer.log(`Error starting sandbox: ${error}`, LogLevel.ERROR);
+    socket.emit('sandboxStatus', { 
+      status: 'error',
+      identifier: options.identifier || this.backendId.name,
+      error: `${error}`
     });
   }
+}
+
 
   /**
    * Handles the stopSandbox event
    */
-  private async handleStopSandbox(socket: Socket): Promise<void> {
-    // This method is complex and depends on external services
-    // For now, we'll just emit a placeholder response
+private async handleStopSandbox(socket: Socket): Promise<void> {
+  try {
+    printer.log('Stopping sandbox...', LogLevel.INFO);
+    
+    socket.emit('sandboxStatus', { 
+      status: 'stopping',
+      identifier: this.backendId.name,
+      message: 'Stopping sandbox...'
+    });
+    
+    await this.sandbox.stop();
+    
     socket.emit('sandboxStatus', { 
       status: 'stopped',
-      identifier: this.backendId.name
+      identifier: this.backendId.name,
+      message: 'Sandbox stopped successfully'
+    });
+    
+    printer.log('Sandbox stopped successfully', LogLevel.INFO);
+  } catch (error) {
+    printer.log(`Error stopping sandbox: ${error}`, LogLevel.ERROR);
+    socket.emit('sandboxStatus', { 
+      status: 'error',
+      identifier: this.backendId.name,
+      error: `${error}`
     });
   }
+}
+
 
   /**
    * Handles the deleteSandbox event
    */
-  private async handleDeleteSandbox(socket: Socket): Promise<void> {
-    // This method is complex and depends on external services
-    // For now, we'll just emit a placeholder response
+private async handleDeleteSandbox(socket: Socket): Promise<void> {
+  try {
+    printer.log('Deleting sandbox...', LogLevel.INFO);
+    
     socket.emit('sandboxStatus', { 
-      status: 'nonexistent',
-      identifier: this.backendId.name
+      status: 'deleting',
+      identifier: this.backendId.name,
+      message: 'Deleting sandbox...'
+    });
+    
+    await this.sandbox.delete({ identifier: this.backendId.name });
+    
+    printer.log('Sandbox delete command issued successfully', LogLevel.DEBUG);
+  } catch (error) {
+    printer.log(`Error deleting sandbox: ${error}`, LogLevel.ERROR);
+    socket.emit('sandboxStatus', { 
+      status: 'error',
+      identifier: this.backendId.name,
+      error: `${error}`
     });
   }
+}
+
 
   /**
    * Handles the stopDevTools event

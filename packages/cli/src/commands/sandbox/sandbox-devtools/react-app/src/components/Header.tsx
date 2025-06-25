@@ -10,7 +10,7 @@ import { useState, useEffect } from 'react';
 
 interface HeaderProps {
   connected: boolean;
-  onClear: () => void;
+  // onClear: () => void;
   sandboxStatus: 'running' | 'stopped' | 'nonexistent' | 'unknown' | 'deploying';
   sandboxIdentifier?: string;
   onStartSandbox: () => void;
@@ -22,7 +22,6 @@ interface HeaderProps {
 
 const Header = ({ 
   connected, 
-  onClear, 
   sandboxStatus, 
   sandboxIdentifier, 
   onStartSandbox, 
@@ -168,7 +167,7 @@ const Header = ({
               Settings
             </Button>
           )}
-          <Button onClick={onClear} iconName="remove">Clear Logs</Button>
+          {/* <Button onClick={onClear} iconName="remove">Clear Logs</Button> */}
           {onStopDevTools && (
             <Button 
               onClick={handleStopDevTools} 

@@ -25,7 +25,6 @@ interface ConsoleViewerProps {
   logs: LogEntry[];
 }
 
-// Function to clean ANSI escape codes from text
 const cleanAnsiCodes = (text: string): string => {
   // This regex handles various ANSI escape sequences including colors, bold, dim, etc.
   return text.replace(/\u001b\[\d+(;\d+)*m|\[2m|\[22m|\[1m|\[36m|\[39m/g, '');
@@ -49,12 +48,12 @@ const ConsoleViewer = ({ logs }: ConsoleViewerProps) => {
     );
   }, [logs]);
   
-  // Filter logs based on selected log levels and search query
+
   const filteredLogs = logs.filter(log => {
-    // Filter by log level if any are selected
+
     const matchesLevel = selectedLogLevels.length === 0 || selectedLogLevels.includes(log.level);
     
-    // Filter by search query if one is provided
+
     const matchesSearch = !searchQuery || 
       log.message.toLowerCase().includes(searchQuery.toLowerCase()) ||
       log.level.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -122,7 +121,6 @@ const ConsoleViewer = ({ logs }: ConsoleViewerProps) => {
       id: 'message',
       header: 'Message',
       cell: (item: LogEntry) => {
-        // Clean any ANSI escape codes from the message
         const cleanedMessage = cleanAnsiCodes(item.message);
         return cleanedMessage;
       },
@@ -130,7 +128,6 @@ const ConsoleViewer = ({ logs }: ConsoleViewerProps) => {
     }
   ];
 
-  // Empty state for when there are no logs
   const emptyState = (
     <Box textAlign="center" padding="m">
       <SpaceBetween size="m">

@@ -382,29 +382,35 @@ const ResourceConsole: React.FC<ResourceConsoleProps> = ({ socket, sandboxStatus
   // Handle editing a resource's friendly name
   const handleEditFriendlyName = (resource: ResourceWithFriendlyName) => {
     setEditingResource(resource);
-    // Set the initial value to the current friendly name
     setEditingFriendlyName(getResourceDisplayName(resource));
   };
   
-  // Handle saving a custom friendly name
-  const handleSaveFriendlyName = () => {
-    if (editingResource) {
-      // Save the custom friendly name
-      updateCustomFriendlyName(editingResource.physicalResourceId, editingFriendlyName);
-      
-      // Close the modal
-      setEditingResource(null);
+
+  const refreshFriendlyNames = () => {
+    if (socket) {
+      socket.emit('getCustomFriendlyNames');
     }
   };
   
-  // Handle removing a custom friendly name
+
+  const handleSaveFriendlyName = () => {
+    if (editingResource) {
+      updateCustomFriendlyName(editingResource.physicalResourceId, editingFriendlyName);
+      
+      setEditingResource(null);
+    
+      refreshFriendlyNames();
+    }
+  };
+  
   const handleRemoveFriendlyName = () => {
     if (editingResource) {
-      // Remove the custom friendly name
+
       removeCustomFriendlyName(editingResource.physicalResourceId);
-      
-      // Close the modal
+    
       setEditingResource(null);
+
+      refreshFriendlyNames();
     }
   };
 
@@ -731,7 +737,7 @@ const ResourceConsole: React.FC<ResourceConsoleProps> = ({ socket, sandboxStatus
   );
 };
 
-// Helper component to display resources
+
 interface ResourceDisplayProps {
   groupedResources: Record<string, Record<string, ResourceWithFriendlyName[]>>;
   columnDefinitions: ColumnDefinition[];

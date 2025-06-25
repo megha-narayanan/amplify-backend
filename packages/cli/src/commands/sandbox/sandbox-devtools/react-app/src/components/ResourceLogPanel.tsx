@@ -71,8 +71,11 @@ const ResourceLogPanel: React.FC<ResourceLogPanelProps> = ({
     // Listen for saved logs
     const handleSavedResourceLogs = (data: { resourceId: string; logs: LogEntry[]; }) => {
       if (data.resourceId === resourceId) {
-        // Set logs from saved logs
-        setLogs(data.logs);
+        // Set logs from saved logs, but preserve existing logs if we already have them
+        // This prevents logs from disappearing when stopping recording
+        if (logs.length === 0 || data.logs.length > logs.length) {
+          setLogs(data.logs);
+        }
       }
     };
 
@@ -105,6 +108,15 @@ const ResourceLogPanel: React.FC<ResourceLogPanelProps> = ({
       logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
     }
   }, [logs]);
+  
+  // Preserve logs when stopping recording
+  useEffect(() => {
+    if (!isRecording && logs.length > 0) {
+      if (socket) {
+        socket.emit('getSavedResourceLogs', { resourceId });
+      }
+    }
+  }, [isRecording, resourceId, socket]);
 
   const formatTimestamp = (timestamp: string) => {
     try {
@@ -123,6 +135,12 @@ const ResourceLogPanel: React.FC<ResourceLogPanelProps> = ({
   );
   const toggleRecording = () => {
     if (!socket) return;
+    
+    // If we're stopping recording, first request to save the current logs
+    if (isRecording) {
+      // Save current logs before stopping
+      socket.emit('getSavedResourceLogs', { resourceId });
+    }
     
     socket.emit('toggleResourceLogging', {
       resourceId,

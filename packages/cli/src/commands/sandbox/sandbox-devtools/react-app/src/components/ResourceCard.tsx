@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { Socket } from 'socket.io-client';
 import {
   ExpandableSection,
   Badge,
@@ -19,12 +20,14 @@ interface ResourceCardProps {
   };
   isLoggingActive: boolean;
   onToggleLogging: () => void;
+  socket: Socket | null;
 }
 
 const ResourceCard: React.FC<ResourceCardProps> = ({ 
   resource,
   isLoggingActive,
-  onToggleLogging
+  onToggleLogging,
+  socket
 }) => {
   const [showLogs, setShowLogs] = useState(false);
 
@@ -87,6 +90,7 @@ const ResourceCard: React.FC<ResourceCardProps> = ({
             resourceId={resource.physicalResourceId}
             resourceName={resource.friendlyName || resource.logicalResourceId}
             onClose={() => setShowLogs(false)}
+            socket={socket}
           />
         )}
       </SpaceBetween>
