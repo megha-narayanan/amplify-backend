@@ -66,6 +66,8 @@
     "@aws-sdk/client-iam": "^3.835.0",
     "@aws-sdk/client-s3": "^3.750.0",
     "@aws-sdk/client-ssm": "^3.750.0",
+    "@aws-sdk/eventstream-handler-node": "^3.821.0",
+    "@aws-sdk/middleware-eventstream": "^3.821.0",
     "@changesets/cli": "^2.26.1",
     "@changesets/get-release-plan": "^4.0.0",
     "@changesets/types": "^6.0.0",
@@ -101,7 +103,7 @@
     "prettier": "^3.5.3",
     "rimraf": "^6.0.1",
     "semver": "^7.5.4",
-    "tsx": "^4.6.1",
+    "tsx": "4.19.4",
     "typedoc": "^0.28.1",
     "typescript": "~5.8.2",
     "verdaccio": "^6.0.1"
@@ -129,6 +131,7 @@
     "ws": "^8.18.2"
   },
   "overrides": {
+    "minimatch": "10.0.1",
     "@aws-sdk/*": "3.750.0",
     "@aws-sdk/types": "3.821.0",
     "@typescript-eslint/typescript-estree": "8.29.1",
