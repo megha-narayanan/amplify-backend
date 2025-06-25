@@ -17,7 +17,7 @@ import { AmplifyClient } from '@aws-sdk/client-amplify';
 import { CloudFormationClient } from '@aws-sdk/client-cloudformation';
 import { EOL } from 'os';
 import { LocalStorageManager } from './local_storage_manager.js';
-import { LogStreamingService } from './services/log_streaming_service.js';
+// LogStreamingService removed - using direct polling instead
 import { ShutdownService } from './services/shutdown_service.js';
 import { SocketHandlerService } from './services/socket_handlers.js';
 import { ResourceService } from './services/resource_service.js';
@@ -124,10 +124,6 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
     
     // Create a storage manager for this sandbox
     const storageManager = new LocalStorageManager(backendId.name);
-
-    // Initialize the log streaming service
-    const logStreamingService = new LogStreamingService();
-    const wsServer = logStreamingService.initializeWebSocketServer();
     
     // Initialize the backend client
     const backendClient = new DeployedBackendClientFactory().getInstance({
@@ -190,7 +186,6 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
     const shutdownService = new ShutdownService(
       io,
       server,
-      logStreamingService,
       storageManager,
       sandbox,
       getSandboxState
@@ -200,15 +195,13 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
     const socketHandlerService = new SocketHandlerService(
       io,
       storageManager,
-      logStreamingService,
       sandbox,
       getSandboxState,
       backendId,
       shutdownService,
-      backendClient // Pass the existing backendClient
+      backendClient 
     );
 
-    // Find an available port starting from 3333
     const port = await findAvailablePort(server, 3333);
 
     printer.print(
@@ -221,7 +214,7 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
     
     // Get initial sandbox status and set sandboxState
     const initialStatus = getSandboxState();
-    sandboxState = initialStatus; // This will update sandboxState to match the actual state
+    sandboxState = initialStatus; 
     
     // Store original printer methods
     // const originalPrint = printer.print;
@@ -509,35 +502,7 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
       socketHandlerService.setupSocketHandlers(socket);
     });
 
-    // Handle WebSocket connections for log streaming
-    wsServer.on('connection', (ws) => {
-      printer.log('Log streaming WebSocket client connected', LogLevel.DEBUG);
-      
-      ws.on('message', (message) => {
-        try {
-          const data = JSON.parse(message.toString());
-          
-          // If this is a log message from our Lambda
-          if (data.event === 'resourceLogs' && data.data) {
-            // Forward to all Socket.IO clients
-            io.emit('resourceLogs', data.data);
-            
-            // Save logs to local storage
-            if (data.data.resourceId && data.data.logs) {
-              data.data.logs.forEach((log: { timestamp: string; message: string }) => {
-                storageManager.appendCloudWatchLog(data.data.resourceId, log);
-              });
-            }
-          }
-        } catch (error) {
-          printer.log(`Error processing WebSocket message: ${error}`, LogLevel.ERROR);
-        }
-      });
-      
-      ws.on('close', () => {
-        printer.log('Log streaming WebSocket client disconnected', LogLevel.DEBUG);
-      });
-    });
+    // WebSocket log streaming removed - using direct polling instead
 
     // Keep the process running until Ctrl+C
     process.once('SIGINT', async () => {

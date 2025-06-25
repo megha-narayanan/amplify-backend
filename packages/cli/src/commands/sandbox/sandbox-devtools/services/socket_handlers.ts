@@ -1,12 +1,13 @@
 import { LogLevel, printer } from '@aws-amplify/cli-core';
 import { Server, Socket } from 'socket.io';
-import { CloudWatchLogsClient, DescribeLogStreamsCommand, GetLogEventsCommand } from '@aws-sdk/client-cloudwatch-logs';
+import { 
+  CloudWatchLogsClient, 
+  DescribeLogStreamsCommand, 
+  GetLogEventsCommand 
+} from '@aws-sdk/client-cloudwatch-logs';
+import { Sandbox } from '@aws-amplify/sandbox';
 import { CloudFormationClient } from '@aws-sdk/client-cloudformation';
-import { DeployedBackendClientFactory } from '@aws-amplify/deployed-backend-client';
-import { S3Client } from '@aws-sdk/client-s3';
-import { AmplifyClient } from '@aws-sdk/client-amplify';
 import { LocalStorageManager } from '../local_storage_manager.js';
-import { LogStreamingService } from './log_streaming_service.js';
 import { getLogGroupName } from '../utils/logging_utils.js';
 import { createFriendlyName } from '../utils/cloudformation_utils.js';
 import { ResourceWithFriendlyName } from '../resource_console_functions.js';
@@ -73,13 +74,12 @@ export interface SocketEvents {
 export class SocketHandlerService {
   private io: Server;
   private storageManager: LocalStorageManager;
-  private logStreamingService: LogStreamingService;
   private activeLogPollers = new Map<string, NodeJS.Timeout>();
-  private sandbox: any; // Using any for now, should be replaced with proper type
+  private sandbox: Sandbox;
   private getSandboxState: () => string;
   private backendId: { name: string };
-  private shutdownService: any; // Using any for now, should be replaced with proper type
-  private backendClient: any; // Client for fetching backend resources
+  private shutdownService: import('./shutdown_service.js').ShutdownService;
+  private backendClient: Record<string, unknown>; 
 
   /**
    * Creates a new SocketHandlerService
@@ -87,21 +87,19 @@ export class SocketHandlerService {
   constructor(
     io: Server,
     storageManager: LocalStorageManager,
-    logStreamingService: LogStreamingService,
-    sandbox: any,
+    sandbox: Sandbox,
     getSandboxState: () => string,
     backendId: { name: string },
-    shutdownService: any,
-    backendClient?: any
+    shutdownService: import('./shutdown_service.js').ShutdownService,
+    backendClient?: Record<string, unknown>
   ) {
     this.io = io;
     this.storageManager = storageManager;
-    this.logStreamingService = logStreamingService;
     this.sandbox = sandbox;
     this.getSandboxState = getSandboxState;
     this.backendId = backendId;
     this.shutdownService = shutdownService;
-    this.backendClient = backendClient
+    this.backendClient = backendClient || {};
   }
 
   /**
@@ -149,24 +147,7 @@ export class SocketHandlerService {
   private async handleToggleResourceLogging(socket: Socket, data: SocketEvents['toggleResourceLogging']): Promise<void> {
     printer.log(`Toggle logging for ${data.resourceId}, startLogging=${data.startLogging}`, LogLevel.DEBUG);
     
-    // Run diagnostics first to check AWS service health
-    try {
-      const diagnosticResults = await this.logStreamingService.runDiagnostics();
-      printer.log(`AWS service diagnostics: ${JSON.stringify(diagnosticResults)}`, LogLevel.DEBUG);
-      
-      // If any service is not accessible, notify the client
-      if (!diagnosticResults.lambdaServiceAccessible || 
-          !diagnosticResults.cloudWatchLogsServiceAccessible || 
-          !diagnosticResults.iamServiceAccessible) {
-        socket.emit('logStreamError', {
-          resourceId: data.resourceId,
-          error: 'AWS service connectivity issues detected. Check your AWS credentials and network connectivity.'
-        });
-        return;
-      }
-    } catch (error) {
-      printer.log(`Error running diagnostics: ${error}`, LogLevel.ERROR);
-    }
+    // Skip diagnostics - we'll catch any errors during the actual log fetching
     
     if (data.startLogging) {
       // Start logging if not already active
@@ -197,33 +178,8 @@ export class SocketHandlerService {
             status: 'starting'
           });
           
-          // Try to set up real-time log streaming first
-          const subscriptionSuccess = await this.logStreamingService.setupLogSubscription(logGroupName, data.resourceId);
-          
-          if (subscriptionSuccess) {
-            // Real-time log streaming set up successfully
-            printer.log(`Real-time log streaming set up for ${data.resourceId}`, LogLevel.INFO);
-            
-            // Save the logging state to local storage
-            this.storageManager.saveResourceLoggingState(data.resourceId, true);
-            
-            // Notify client that logs are now being recorded
-            socket.emit('logStreamStatus', {
-              resourceId: data.resourceId,
-              status: 'active'
-            });
-            
-            // Also broadcast to all clients to ensure UI is updated everywhere
-            this.io.emit('logStreamStatus', {
-              resourceId: data.resourceId,
-              status: 'active'
-            });
-            
-            return;
-          }
-          
-          // If real-time log streaming failed, fall back to polling
-          printer.log(`Falling back to polling-based logs for ${data.resourceId}`, LogLevel.INFO);
+          // Using polling-based logs directly
+          printer.log(`Setting up polling-based logs for ${data.resourceId}`, LogLevel.INFO);
           
           // Create CloudWatch Logs client
           const cwLogsClient = new CloudWatchLogsClient();
@@ -294,8 +250,8 @@ export class SocketHandlerService {
           // Initial fetch
           await fetchLogs();
           
-          // Set up polling interval
-          const pollingInterval = setInterval(fetchLogs, 5000); // Poll every 5 seconds
+          // Set up polling interval with more frequent polling since we're only using this approach
+          const pollingInterval = setInterval(fetchLogs, 2000); // Poll every 2 seconds
           
           // Store polling interval
           this.activeLogPollers.set(data.resourceId, pollingInterval);
@@ -343,8 +299,6 @@ export class SocketHandlerService {
         return;
       }
       
-      // Try to remove subscription filter if it exists
-      await this.logStreamingService.removeLogSubscription(logGroupName, data.resourceId);
       
       if (pollingInterval) {
         // Stop polling
@@ -428,8 +382,6 @@ export class SocketHandlerService {
    */
   private handleGetActiveLogStreams(socket: Socket): void {
     printer.log('DEBUG: getActiveLogStreams event received', LogLevel.DEBUG);
-    // Use getResourcesWithActiveLogging instead of getResourcesWithCloudWatchLogs
-    // to only return resources that are actively being logged
     const resourceIds = this.storageManager.getResourcesWithActiveLogging();
     printer.log(`DEBUG: Active log streams: ${resourceIds.join(', ') || 'none'}`, LogLevel.DEBUG);
     socket.emit('activeLogStreams', resourceIds);
@@ -560,7 +512,7 @@ export class SocketHandlerService {
       }
       
       printer.log('Fetching backend metadata...', LogLevel.DEBUG);
-      const data = await this.backendClient.getBackendMetadata(this.backendId);
+      const data = await (this.backendClient as { getBackendMetadata: (id: { name: string }) => Promise<any> }).getBackendMetadata(this.backendId);
       printer.log(`Successfully fetched backend metadata with ${data.resources?.length || 0} resources`, LogLevel.INFO);
 
       const cfnClient = new CloudFormationClient();

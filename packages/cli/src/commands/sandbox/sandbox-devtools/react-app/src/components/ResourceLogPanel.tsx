@@ -42,10 +42,14 @@ const ResourceLogPanel: React.FC<ResourceLogPanelProps> = ({
   useEffect(() => {
     if (!socket) return;
     
-    
     // Request saved logs when panel opens
     socket.emit('viewResourceLogs', { resourceId });
-
+    
+    // Set up a periodic refresh for logs when viewing
+    const refreshInterval = setInterval(() => {
+      socket.emit('getSavedResourceLogs', { resourceId });
+    }, 2000); // Refresh every 2 seconds to match server-side polling
+    
     socket.emit('getActiveLogStreams');
 
     const handleLogStreamStatus = (data: { resourceId: string; status: string; }) => {
@@ -99,6 +103,9 @@ const ResourceLogPanel: React.FC<ResourceLogPanelProps> = ({
       socket.off('resourceLogs', handleResourceLogs);
       socket.off('savedResourceLogs', handleSavedResourceLogs);
       socket.off('logStreamError', handleLogStreamError);
+      
+      // Clear the refresh interval
+      clearInterval(refreshInterval);
     };
   }, [socket, resourceId]);
 

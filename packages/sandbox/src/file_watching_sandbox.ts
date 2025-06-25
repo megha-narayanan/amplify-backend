@@ -314,13 +314,9 @@ export class FileWatchingSandbox extends EventEmitter implements Sandbox {
     );
     
     try {
-      this.printer.log(`[Sandbox] Resolving backend ID for deletion`, LogLevel.DEBUG);
       const backendId = await this.backendIdSandboxResolver(options.identifier);
-      this.printer.log(`[Sandbox] Resolved backend ID: ${backendId.name}`, LogLevel.DEBUG);
       
-      this.printer.log(`[Sandbox] Calling executor.destroy()`, LogLevel.DEBUG);
       await this.executor.destroy(backendId);
-      this.printer.log(`[Sandbox] executor.destroy() completed successfully`, LogLevel.DEBUG);
       
       // Update state to nonexistent
       this.state = 'nonexistent';
@@ -359,9 +355,6 @@ export class FileWatchingSandbox extends EventEmitter implements Sandbox {
         this.state = 'deploying';
         this.printer.log(`[Sandbox] Setting state to 'deploying'`, LogLevel.DEBUG);
         
-        // Emit a deployment start event
-        this.printer.log('[Sandbox] Starting deployment...', LogLevel.INFO);
-        
         const deployResult = await this.executor.deploy(
           await this.backendIdSandboxResolver(options.identifier),
           // It's important to pass this as callback so that debounce does
@@ -387,7 +380,8 @@ export class FileWatchingSandbox extends EventEmitter implements Sandbox {
         };
         setSpanAttributes(span, data);
         span.end();
-        
+
+        this.printer.log('[Sandbox] Deployment successful', LogLevel.DEBUG);
         
         // Set state based on watchForChanges option
         if (options.watchForChanges === false) {
@@ -399,9 +393,7 @@ export class FileWatchingSandbox extends EventEmitter implements Sandbox {
           this.state = 'running';
           this.printer.log(`[Sandbox] Setting state to 'running' after successful deployment`, LogLevel.DEBUG);
         }
-        
         this.emit('successfulDeployment', deployResult);
-        this.printer.log('[Sandbox] Deployment successful', LogLevel.INFO);
       } catch (error) {
         const amplifyError = AmplifyError.isAmplifyError(error)
           ? error

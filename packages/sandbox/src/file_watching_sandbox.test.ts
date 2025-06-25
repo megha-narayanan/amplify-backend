@@ -202,16 +202,16 @@ void describe('Sandbox to check if region is bootstrapped', () => {
       openMock.mock.calls[0].arguments[0],
       getBootstrapUrl(region),
     );
-    assert.strictEqual(printer.log.mock.callCount(), 1);
+    assert.strictEqual(printer.log.mock.callCount(), 2);
     assert.strictEqual(
-      printer.log.mock.calls[0].arguments[0],
+      printer.log.mock.calls[1].arguments[0],
       `The region ${format.highlight(
         region,
       )} has not been bootstrapped. Sign in to the AWS console as a Root user or Admin to complete the bootstrap process, then restart the sandbox.${EOL}If this is not the region you are expecting to bootstrap, check for any AWS environment variables that may be set in your shell or use ${format.command(
         '--profile <profile-name>',
       )} to specify a profile with the correct region.`,
     );
-    assert.strictEqual(printer.log.mock.calls[0].arguments[1], undefined);
+    assert.strictEqual(printer.log.mock.calls[1].arguments[1], undefined);
   });
 
   void it('when region has not bootstrapped, and opening console url fails prints url to initiate bootstrap', async () => {
@@ -237,26 +237,26 @@ void describe('Sandbox to check if region is bootstrapped', () => {
       openMock.mock.calls[0].arguments[0],
       getBootstrapUrl(region),
     );
-    assert.strictEqual(printer.log.mock.callCount(), 3);
+    assert.strictEqual(printer.log.mock.callCount(), 4);
     assert.strictEqual(
-      printer.log.mock.calls[0].arguments[0],
+      printer.log.mock.calls[1].arguments[0],
       `The region ${format.highlight(
         region,
       )} has not been bootstrapped. Sign in to the AWS console as a Root user or Admin to complete the bootstrap process, then restart the sandbox.${EOL}If this is not the region you are expecting to bootstrap, check for any AWS environment variables that may be set in your shell or use ${format.command(
         '--profile <profile-name>',
       )} to specify a profile with the correct region.`,
     );
-    assert.strictEqual(printer.log.mock.calls[0].arguments[1], undefined);
-    assert.strictEqual(
-      printer.log.mock.calls[1].arguments[0],
-      'Unable to open bootstrap url, open error',
-    );
-    assert.strictEqual(printer.log.mock.calls[1].arguments[1], LogLevel.DEBUG);
+    assert.strictEqual(printer.log.mock.calls[1].arguments[1], undefined);
     assert.strictEqual(
       printer.log.mock.calls[2].arguments[0],
+      'Unable to open bootstrap url, open error',
+    );
+    assert.strictEqual(printer.log.mock.calls[2].arguments[1], LogLevel.DEBUG);
+    assert.strictEqual(
+      printer.log.mock.calls[3].arguments[0],
       `Open ${getBootstrapUrl(region)} in the browser.`,
     );
-    assert.strictEqual(printer.log.mock.calls[2].arguments[1], undefined);
+    assert.strictEqual(printer.log.mock.calls[3].arguments[1], undefined);
   });
 
   void it('when user does not have proper credentials throw user error', async () => {
@@ -721,22 +721,22 @@ void describe('Sandbox using local project name resolver', () => {
     );
 
     // assert print statements are called correctly
-    assert.strictEqual(printer.log.mock.callCount(), 15);
+    assert.strictEqual(printer.log.mock.callCount(), 21);
     assert.match(
-      printer.log.mock.calls[5].arguments[0],
+      printer.log.mock.calls[9].arguments[0],
       /random BackendDeployer error/,
     );
-    assert.strictEqual(printer.log.mock.calls[5].arguments[1], LogLevel.ERROR);
+    assert.strictEqual(printer.log.mock.calls[9].arguments[1], LogLevel.ERROR);
     assert.strictEqual(
-      printer.log.mock.calls[6].arguments[0],
+      printer.log.mock.calls[10].arguments[0],
       'Stack Trace for UnknownFault',
     );
-    assert.strictEqual(printer.log.mock.calls[6].arguments[1], LogLevel.DEBUG);
+    assert.strictEqual(printer.log.mock.calls[10].arguments[1], LogLevel.DEBUG);
     assert.match(
-      printer.log.mock.calls[7].arguments[0],
+      printer.log.mock.calls[11].arguments[0],
       /file_watching_sandbox.ts/,
     );
-    assert.strictEqual(printer.log.mock.calls[7].arguments[1], LogLevel.DEBUG);
+    assert.strictEqual(printer.log.mock.calls[11].arguments[1], LogLevel.DEBUG);
   });
 
   void it('handles UpdateNotSupported error while deploying and offers to reset sandbox and customer says yes', async (contextual) => {
