@@ -19,7 +19,7 @@ export type Sandbox = {
     start: (options: SandboxOptions) => Promise<void>;
     stop: () => Promise<void>;
     delete: (options: SandboxDeleteOptions) => Promise<void>;
-    getStatus: () => Promise<SandboxStatus>;
+    getState: () => 'running' | 'stopped' | 'deploying' | 'nonexistent';
 } & EventEmitter;
 
 // @public (undocumented)
@@ -51,16 +51,6 @@ export type SandboxOptions = {
 export class SandboxSingletonFactory {
     constructor(sandboxIdResolver: BackendIdSandboxResolver, sdkProfileResolver: SDKProfileResolver, printer: Printer, format: Format);
     getInstance: () => Promise<Sandbox>;
-}
-
-// @public
-export enum SandboxStatus {
-    // (undocumented)
-    NONEXISTENT = "nonexistent",
-    // (undocumented)
-    RUNNING = "running",
-    // (undocumented)
-    STOPPED = "stopped"
 }
 
 // (No @packageDocumentation comment for this package)
