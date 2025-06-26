@@ -1,7 +1,7 @@
-import { describe, it, mock, beforeEach, afterEach } from 'node:test';
+import { afterEach, beforeEach, describe, it, mock } from 'node:test';
 import assert from 'node:assert';
 import net from 'net';
-import * as portChecker from './port_checker.js';
+import { PortChecker } from './port_checker.js';
 
 void describe('port_checker', () => {
   beforeEach(() => {
@@ -30,6 +30,7 @@ void describe('port_checker', () => {
       net.createServer = mock.fn(() => mockServer as unknown as net.Server);
       
       try {
+        const portChecker = new PortChecker();
         const result = await portChecker.isPortInUse(3000);
         assert.strictEqual(result, true);
         assert.strictEqual(mockServer.listen.mock.calls.length, 1);
@@ -55,6 +56,7 @@ void describe('port_checker', () => {
       net.createServer = mock.fn(() => mockServer as unknown as net.Server);
       
       try {
+        const portChecker = new PortChecker();
         const result = await portChecker.isPortInUse(3000);
         assert.strictEqual(result, false);
         assert.strictEqual(mockServer.listen.mock.calls.length, 1);
@@ -81,6 +83,7 @@ void describe('port_checker', () => {
       net.createServer = mock.fn(() => mockServer as unknown as net.Server);
       
       try {
+        const portChecker = new PortChecker();
         const result = await portChecker.isPortInUse(3000);
         assert.strictEqual(result, false);
       } finally {
@@ -108,6 +111,7 @@ void describe('port_checker', () => {
       
       try {
         // Call the function under test
+        const portChecker = new PortChecker();
         const result = await portChecker.isDevToolsRunning();
         
         // Verify the result

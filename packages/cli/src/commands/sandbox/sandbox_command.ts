@@ -2,7 +2,7 @@ import { ArgumentsCamelCase, Argv, CommandModule } from 'yargs';
 import fs from 'fs';
 import fsp from 'fs/promises';
 import { LogLevel, format, printer } from '@aws-amplify/cli-core';
-import { isDevToolsRunning } from './port_checker.js';
+import { PortChecker } from './port_checker.js';
 import {
   SandboxFunctionStreamingOptions,
   SandboxSingletonFactory,
@@ -167,7 +167,8 @@ export class SandboxCommand
     printer.log(`DEBUG: - functionStreamingOptions: ${JSON.stringify(functionStreamingOptions)}`, LogLevel.DEBUG);
     
     // Check if DevTools is running (asks user to start sandbox in Devtools, so Devtools can manage the sandbox)
-    const devToolsRunning = await isDevToolsRunning();
+    const portChecker = new PortChecker();
+    const devToolsRunning = await portChecker.isDevToolsRunning();
     if (devToolsRunning) {
       printer.log('DevTools is currently running', LogLevel.ERROR);
       throw new AmplifyUserError('DevToolsRunningError', {
@@ -331,6 +332,11 @@ export class SandboxCommand
   };
 
   sigIntHandler = async () => {
+    printer.print(
+      `${EOL}Stopping the sandbox process. To delete the sandbox, run ${format.normalizeAmpxCommand(
+        'sandbox delete',
+      )}`,
+    );
     printer.log('DEBUG: sigIntHandler called - stopping sandbox process', LogLevel.DEBUG);
     try {
       const sandbox = await this.sandboxFactory.getInstance();
@@ -339,12 +345,6 @@ export class SandboxCommand
     } catch (error) {
       printer.log(`DEBUG: Error in sigIntHandler: ${error}`, LogLevel.ERROR);
     }
-    
-    printer.print(
-      `${EOL}Stopping the sandbox process. To delete the sandbox, run ${format.normalizeAmpxCommand(
-        'sandbox delete',
-      )}`,
-    );
   };
 
   private validateDirectory = async (option: string, dir: string) => {
