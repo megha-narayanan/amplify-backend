@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, it, mock } from 'node:test';
+import { beforeEach, describe, it, mock } from 'node:test';
 import assert from 'node:assert';
 import fs from 'fs';
 import fsp from 'fs/promises';
@@ -25,8 +25,8 @@ import { NoticesRenderer } from '../../notices/notices_renderer.js';
 import { EOL } from 'node:os';
 import { PortChecker } from './port_checker.js';
 
-// Mock PortChecker.prototype.isDevToolsRunning to always return false
-mock.method(PortChecker.prototype, 'isDevToolsRunning', () => Promise.resolve(false));
+// Mock PortChecker.prototype.isPortInUse to always return false
+mock.method(PortChecker.prototype, 'isPortInUse', () => Promise.resolve(false));
 
 mock.method(fsp, 'mkdir', () => Promise.resolve());
 
@@ -78,7 +78,7 @@ void describe('sandbox command', () => {
       format,
     );
     sandbox = await sandboxFactory.getInstance();
-    
+
     // Increase the maximum number of listeners to avoid memory leak warnings
     sandbox.setMaxListeners(20);
 
@@ -214,9 +214,6 @@ void describe('sandbox command', () => {
   });
 
   void it('Prints stopping sandbox and instructions to delete sandbox when users send ctrl+c', async (contextual) => {
-    // Ensure isDevToolsRunning returns false for this test
-   //contextual.mock.method(PortChecker.prototype, 'isDevToolsRunning', () => Promise.resolve(false));
-    
     // Mock process and extract the sigint handler after calling the sandbox command
     const processSignal = contextual.mock.method(process, 'on', () => {
       /* no op */
@@ -402,14 +399,16 @@ void describe('sandbox command', () => {
       } as SandboxFunctionStreamingOptions,
     );
   });
-  
-  void it('throws an error when DevTools is running', async (contextual) => {    
-    // Mock isDevToolsRunning to return true for this test
-    contextual.mock.method(PortChecker.prototype, 'isDevToolsRunning', () => Promise.resolve(true));
+
+  void it('throws an error when DevTools is running', async (contextual) => {
+    // Mock isPortInUse to return true for this test
+    contextual.mock.method(PortChecker.prototype, 'isPortInUse', () =>
+      Promise.resolve(true),
+    );
 
     // Mock printer.log to verify error message
     const printerLogMock = contextual.mock.method(printer, 'log');
-    
+
     // Expect the command to throw an AmplifyUserError
     await assert.rejects(
       () => commandRunner.runCommand('sandbox'),
@@ -418,18 +417,20 @@ void describe('sandbox command', () => {
         assert.strictEqual(err.error.name, 'DevToolsRunningError');
         assert.strictEqual(
           err.error.message,
-          'DevTools is currently running. Please start the sandbox through DevTools instead.'
+          'DevTools is currently running. Please start the sandbox through DevTools instead.',
         );
         return true;
-      }
+      },
     );
-    
+
     // Verify that sandbox.start was never called
     assert.equal(sandboxStartMock.mock.callCount(), 0);
-    
+
     // Verify that the error was logged
-    assert.ok(printerLogMock.mock.calls.some(call => 
-      call.arguments[0] === 'DevTools is currently running'
-    ));
+    assert.ok(
+      printerLogMock.mock.calls.some(
+        (call) => call.arguments[0] === 'DevTools is currently running',
+      ),
+    );
   });
 });

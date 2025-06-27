@@ -168,7 +168,8 @@ export class SandboxCommand
     
     // Check if DevTools is running (asks user to start sandbox in Devtools, so Devtools can manage the sandbox)
     const portChecker = new PortChecker();
-    const devToolsRunning = await portChecker.isDevToolsRunning();
+    const DEVTOOLS_PORT = 3333;
+    const devToolsRunning = await portChecker.isPortInUse(DEVTOOLS_PORT);
     if (devToolsRunning) {
       printer.log('DevTools is currently running', LogLevel.ERROR);
       throw new AmplifyUserError('DevToolsRunningError', {
@@ -176,8 +177,6 @@ export class SandboxCommand
         resolution: 'Open DevTools in your browser and use the "Start Sandbox" button to start the sandbox.',
       });
     }
-    
-    try {
       await sandbox.start({
         dir: args.dirToWatch,
         exclude: watchExclusions,
@@ -185,32 +184,8 @@ export class SandboxCommand
         watchForChanges: !args.once,
         functionStreamingOptions,
       });
-      printer.log('DEBUG: Sandbox started successfully', LogLevel.DEBUG);
-      
-      // Register additional event listeners for debugging
-      sandbox.on('successfulDeployment', () => {
-        printer.log('DEBUG: Event - successfulDeployment triggered', LogLevel.DEBUG);
-      });
-      
-      sandbox.on('failedDeployment', (error) => {
-        printer.log(`DEBUG: Event - failedDeployment triggered: ${error}`, LogLevel.DEBUG);
-      });
-      
-      sandbox.on('resourceConfigChanged', () => {
-        printer.log('DEBUG: Event - resourceConfigChanged triggered', LogLevel.DEBUG);
-      });
-      
-      sandbox.on('successfulDeletion', () => {
-        printer.log('DEBUG: Event - successfulDeletion triggered', LogLevel.DEBUG);
-      });
-      
-    } catch (error) {
-      printer.log(`DEBUG: Error starting sandbox: ${error}`, LogLevel.ERROR);
-      throw error;
-    }
     
     process.once('SIGINT', () => {
-      printer.log('DEBUG: SIGINT received, handling sandbox shutdown', LogLevel.DEBUG);
       void this.sigIntHandler();
     });
   };
@@ -337,13 +312,11 @@ export class SandboxCommand
         'sandbox delete',
       )}`,
     );
-    printer.log('DEBUG: sigIntHandler called - stopping sandbox process', LogLevel.DEBUG);
     try {
       const sandbox = await this.sandboxFactory.getInstance();
-      printer.log('DEBUG: Attempting to stop sandbox', LogLevel.DEBUG);
       await sandbox.stop();
     } catch (error) {
-      printer.log(`DEBUG: Error in sigIntHandler: ${error}`, LogLevel.ERROR);
+      printer.log(`Error stopping sandbox: ${String(error)}`, LogLevel.ERROR);
     }
   };
 
