@@ -1,25 +1,12 @@
-import { describe, it, mock, beforeEach, afterEach } from 'node:test';
+import { afterEach, beforeEach, describe, it, mock } from 'node:test';
 import assert from 'node:assert';
-import { LocalStorageManager } from './local_storage_manager.js';
+import { type CloudWatchLogEntry, type DeploymentEvent, LocalStorageManager } from './local_storage_manager.js';
 import { printer } from '@aws-amplify/cli-core';
-
-// Define types for CloudWatch logs and deployment progress events
-interface CloudWatchLogEntry {
-  timestamp: string;
-  message: string;
-  [key: string]: unknown;
-}
-
-interface DeploymentProgressEvent {
-  timestamp: string;
-  message: string;
-  [key: string]: unknown;
-}
 
 class MockLocalStorageManager extends LocalStorageManager {
   private mockResources: Record<string, unknown> | null = null;
   private mockCloudWatchLogs: Record<string, CloudWatchLogEntry[]> = {};
-  private mockDeploymentProgress: DeploymentProgressEvent[] = [];
+  private mockDeploymentProgress: DeploymentEvent[] = [];
   private mockResourceLoggingStates: Record<string, { isActive: boolean, lastUpdated: string }> | null = null;
   private mockCustomFriendlyNames: Record<string, string> = {};
   private mockLogSize = 0;
@@ -59,16 +46,16 @@ class MockLocalStorageManager extends LocalStorageManager {
     this.mockCloudWatchLogs[resourceId].push(logEntry);
   }
 
-  saveDeploymentProgress(events: DeploymentProgressEvent[]): void {
+  saveDeploymentProgress(events: DeploymentEvent[]): void {
     this.mockDeploymentProgress = events;
   }
 
-  loadDeploymentProgress(): DeploymentProgressEvent[] {
+  loadDeploymentProgress(): DeploymentEvent[] {
     return this.mockDeploymentProgress;
   }
 
   appendDeploymentProgressEvent(event: Record<string, unknown>): void {
-    this.mockDeploymentProgress.push(event as DeploymentProgressEvent);
+    this.mockDeploymentProgress.push(event as DeploymentEvent);
   }
 
   clearDeploymentProgress(): void {
@@ -137,6 +124,7 @@ class MockLocalStorageManager extends LocalStorageManager {
     this.mockCustomFriendlyNames = {};
     this.mockLogSize = 0;
   }
+
 }
 
 void describe('LocalStorageManager', () => {
@@ -214,7 +202,7 @@ void describe('LocalStorageManager', () => {
   void describe('CloudWatch logs operations', () => {
     void it('saves CloudWatch logs for a resource', () => {
       const resourceId = 'lambda-function';
-      const logs = [{ timestamp: '2023-01-01T00:00:00Z', message: 'Test log' }];
+      const logs = [{ timestamp: 1672531200000, message: 'Test log' }];
       
       storageManager.saveCloudWatchLogs(resourceId, logs);
       
@@ -223,7 +211,7 @@ void describe('LocalStorageManager', () => {
     
     void it('loads CloudWatch logs for a resource', () => {
       const resourceId = 'lambda-function';
-      const mockLogs = [{ timestamp: '2023-01-01T00:00:00Z', message: 'Test log' }];
+      const mockLogs = [{ timestamp: 1672531200000, message: 'Test log' }];
       storageManager.saveCloudWatchLogs(resourceId, mockLogs);
       
       const result = storageManager.loadCloudWatchLogs(resourceId);
@@ -239,8 +227,8 @@ void describe('LocalStorageManager', () => {
     
     void it('appends a log entry to a resource\'s CloudWatch logs', () => {
       const resourceId = 'lambda-function';
-      const existingLogs = [{ timestamp: '2023-01-01T00:00:00Z', message: 'Existing log' }];
-      const newLog = { timestamp: '2023-01-01T00:01:00Z', message: 'New log' };
+      const existingLogs = [{ timestamp: 1672531200000, message: 'Existing log' }];
+      const newLog = { timestamp: 1672531260000, message: 'New log' };
       storageManager.saveCloudWatchLogs(resourceId, existingLogs);
       
       storageManager.appendCloudWatchLog(resourceId, newLog);
@@ -251,8 +239,8 @@ void describe('LocalStorageManager', () => {
     });
     
     void it('gets a list of resources with CloudWatch logs', () => {
-      storageManager.saveCloudWatchLogs('lambda-function', [{ timestamp: '2023-01-01T00:00:00Z', message: 'Test log' }]);
-      storageManager.saveCloudWatchLogs('api-gateway', [{ timestamp: '2023-01-01T00:00:00Z', message: 'Test log' }]);
+      storageManager.saveCloudWatchLogs('lambda-function', [{ timestamp: 1672531200000, message: 'Test log' }]);
+      storageManager.saveCloudWatchLogs('api-gateway', [{ timestamp: 1672531200000, message: 'Test log' }]);
       
       const result = storageManager.getResourcesWithCloudWatchLogs();
       
@@ -270,8 +258,8 @@ void describe('LocalStorageManager', () => {
   void describe('Deployment progress operations', () => {
     void it('saves deployment progress events', () => {
       const events = [
-        { timestamp: '2023-01-01T00:00:00Z', message: 'CREATE_IN_PROGRESS' },
-        { timestamp: '2023-01-01T00:01:00Z', message: 'CREATE_COMPLETE' }
+        { timestamp: '2023-01-01T00:00:00Z', eventType: 'CREATE_IN_PROGRESS', message: 'CREATE_IN_PROGRESS' },
+        { timestamp: '2023-01-01T00:01:00Z', eventType: 'CREATE_COMPLETE', message: 'CREATE_COMPLETE' }
       ];
       
       storageManager.saveDeploymentProgress(events);
@@ -281,8 +269,8 @@ void describe('LocalStorageManager', () => {
     
     void it('loads deployment progress events', () => {
       const mockEvents = [
-        { timestamp: '2023-01-01T00:00:00Z', message: 'CREATE_IN_PROGRESS' },
-        { timestamp: '2023-01-01T00:01:00Z', message: 'CREATE_COMPLETE' }
+        { timestamp: '2023-01-01T00:00:00Z', eventType: 'CREATE_IN_PROGRESS', message: 'CREATE_IN_PROGRESS' },
+        { timestamp: '2023-01-01T00:01:00Z', eventType: 'CREATE_COMPLETE', message: 'CREATE_COMPLETE' }
       ];
       storageManager.saveDeploymentProgress(mockEvents);
       
@@ -298,8 +286,8 @@ void describe('LocalStorageManager', () => {
     });
     
     void it('appends a deployment progress event', () => {
-      const existingEvents = [{ timestamp: '2023-01-01T00:00:00Z', message: 'CREATE_IN_PROGRESS' }];
-      const newEvent = { timestamp: '2023-01-01T00:01:00Z', message: 'CREATE_COMPLETE' };
+      const existingEvents = [{ timestamp: '2023-01-01T00:00:00Z', eventType: 'CREATE_IN_PROGRESS', message: 'CREATE_IN_PROGRESS' }];
+      const newEvent = { timestamp: '2023-01-01T00:01:00Z', eventType: 'CREATE_COMPLETE', message: 'CREATE_COMPLETE' };
       storageManager.saveDeploymentProgress(existingEvents);
       
       storageManager.appendDeploymentProgressEvent(newEvent);
@@ -311,8 +299,8 @@ void describe('LocalStorageManager', () => {
     
     void it('clears deployment progress events', () => {
       const events = [
-        { timestamp: '2023-01-01T00:00:00Z', message: 'CREATE_IN_PROGRESS' },
-        { timestamp: '2023-01-01T00:01:00Z', message: 'CREATE_COMPLETE' }
+        { timestamp: '2023-01-01T00:00:00Z', eventType: 'CREATE_IN_PROGRESS', message: 'CREATE_IN_PROGRESS' },
+        { timestamp: '2023-01-01T00:01:00Z', eventType: 'CREATE_COMPLETE', message: 'CREATE_COMPLETE' }
       ];
       storageManager.saveDeploymentProgress(events);
       
@@ -465,8 +453,8 @@ void describe('LocalStorageManager', () => {
   void describe('clearAll', () => {
     void it('removes all files in all directories', () => {
       storageManager.saveResources({ test: 'data' });
-      storageManager.saveCloudWatchLogs('lambda-function', [{ timestamp: '2023-01-01T00:00:00Z', message: 'Test log' }]);
-      storageManager.saveDeploymentProgress([{ timestamp: '2023-01-01T00:00:00Z', message: 'CREATE_IN_PROGRESS' }]);
+      storageManager.saveCloudWatchLogs('lambda-function', [{ timestamp: 1672531200000, message: 'Test log' }]);
+      storageManager.saveDeploymentProgress([{ timestamp: '2023-01-01T00:00:00Z', eventType: 'CREATE_IN_PROGRESS', message: 'CREATE_IN_PROGRESS' }]);
       
       storageManager.clearAll();
       

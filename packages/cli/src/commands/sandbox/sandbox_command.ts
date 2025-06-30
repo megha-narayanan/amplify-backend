@@ -97,12 +97,9 @@ export class SandboxCommand
   handler = async (
     args: ArgumentsCamelCase<SandboxCommandOptionsKebabCase>,
   ): Promise<void> => {
-    printer.log('DEBUG: Starting sandbox handler execution', LogLevel.DEBUG);
     const sandbox = await this.sandboxFactory.getInstance();
-    printer.log('DEBUG: Sandbox instance created', LogLevel.DEBUG);
     this.sandboxIdentifier = args.identifier;
     this.profile = args.profile;
-    printer.log(`DEBUG: Sandbox identifier: ${this.sandboxIdentifier}, profile: ${this.profile}`, LogLevel.DEBUG);
 
     // attaching event handlers
     const clientConfigLifecycleHandler = new ClientConfigLifecycleHandler(
@@ -111,16 +108,13 @@ export class SandboxCommand
       args.outputsOutDir,
       args.outputsFormat,
     );
-    printer.log('DEBUG: Created client config lifecycle handler', LogLevel.DEBUG);
     const eventHandlers = this.sandboxEventHandlerCreator?.({
       sandboxIdentifier: this.sandboxIdentifier,
       clientConfigLifecycleHandler,
     });
-    printer.log(`DEBUG: Event handlers created: ${eventHandlers ? 'yes' : 'no'}`, LogLevel.DEBUG);
     
     if (eventHandlers) {
       Object.entries(eventHandlers).forEach(([event, handlers]) => {
-        printer.log(`DEBUG: Attaching ${handlers.length} handlers for event: ${event}`, LogLevel.DEBUG);
         handlers.forEach((handler) => sandbox.on(event, handler));
       });
     }
@@ -159,12 +153,12 @@ export class SandboxCommand
         watchExclusions.push(args.logsOutFile);
       }
     }
-    printer.log('DEBUG: Starting sandbox with options:', LogLevel.DEBUG);
-    printer.log(`DEBUG: - dir: ${args.dirToWatch || 'undefined'}`, LogLevel.DEBUG);
-    printer.log(`DEBUG: - exclude: ${JSON.stringify(watchExclusions)}`, LogLevel.DEBUG);
-    printer.log(`DEBUG: - identifier: ${args.identifier || 'undefined'}`, LogLevel.DEBUG);
-    printer.log(`DEBUG: - watchForChanges: ${!args.once}`, LogLevel.DEBUG);
-    printer.log(`DEBUG: - functionStreamingOptions: ${JSON.stringify(functionStreamingOptions)}`, LogLevel.DEBUG);
+    printer.log('Starting sandbox with options:', LogLevel.DEBUG);
+    printer.log(`- dir: ${args.dirToWatch || 'undefined'}`, LogLevel.DEBUG);
+    printer.log(`- exclude: ${JSON.stringify(watchExclusions)}`, LogLevel.DEBUG);
+    printer.log(`- identifier: ${args.identifier || 'undefined'}`, LogLevel.DEBUG);
+    printer.log(`- watchForChanges: ${!args.once}`, LogLevel.DEBUG);
+    printer.log(`- functionStreamingOptions: ${JSON.stringify(functionStreamingOptions)}`, LogLevel.DEBUG);
     
     // Check if DevTools is running (asks user to start sandbox in Devtools, so Devtools can manage the sandbox)
     const portChecker = new PortChecker();

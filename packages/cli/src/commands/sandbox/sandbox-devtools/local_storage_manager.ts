@@ -1,7 +1,30 @@
+/* eslint-disable jsdoc/check-param-names */
 import fs from 'fs';
 import path from 'path';
 import { homedir } from 'os';
 import { LogLevel, printer } from '@aws-amplify/cli-core';
+
+/**
+ * Represents a deployment progress event
+ */
+export type DeploymentEvent = {
+  timestamp: string;
+  eventType: string;
+  resourceType?: string;
+  logicalResourceId?: string;
+  resourceStatus?: string;
+  message?: string;
+};
+
+/**
+ * Represents a CloudWatch log entry
+ */
+export type CloudWatchLogEntry = {
+  timestamp: number;
+  message: string;
+  logGroupName?: string;
+  logStreamName?: string;
+};
 
 /**
  * Manager for local storage of sandbox data
@@ -19,12 +42,7 @@ export class LocalStorageManager {
   private readonly defaultMaxLogSizeMB = 50; // Default 50MB limit
   private _maxLogSizeMB: number;
   
-  /**
-   * Gets the current maximum log size in MB
-   */
-  get maxLogSizeMB(): number {
-    return this._maxLogSizeMB;
-  }
+  
 
   /**
    * Creates a new LocalStorageManager
@@ -60,20 +78,25 @@ export class LocalStorageManager {
     printer.log(`LocalStorageManager: Using max log size: ${this._maxLogSizeMB} MB`, LogLevel.DEBUG);
   }
 
-  
+  /**
+   * Gets the current maximum log size in MB
+   */
+  get maxLogSizeMB(): number {
+    return this._maxLogSizeMB;
+  }
 
   /**
    * Saves deployment progress events to a file
    * @param events The deployment events to save
    */
-  saveDeploymentProgress(events: any[]): void {
+  saveDeploymentProgress(events: DeploymentEvent[]): void {
     try {
       printer.log(`LocalStorageManager: Saving deployment progress to ${this.deploymentProgressFile}`, LogLevel.DEBUG);
       printer.log(`LocalStorageManager: Number of events: ${events.length}`, LogLevel.DEBUG);
       fs.writeFileSync(this.deploymentProgressFile, JSON.stringify(events, null, 2));
       printer.log(`LocalStorageManager: Deployment progress saved successfully`, LogLevel.DEBUG);
     } catch (error) {
-      printer.log(`LocalStorageManager: Error saving deployment progress: ${error}`, LogLevel.ERROR);
+      printer.log(`LocalStorageManager: Error saving deployment progress: ${String(error)}`, LogLevel.ERROR);
       if (error instanceof Error) {
         printer.log(`LocalStorageManager: Error stack: ${error.stack}`, LogLevel.ERROR);
       }
@@ -84,18 +107,15 @@ export class LocalStorageManager {
    * Loads deployment progress events from a file
    * @returns The saved deployment events or an empty array if none exist
    */
-  loadDeploymentProgress(): any[] {
+  loadDeploymentProgress(): DeploymentEvent[] {
     try {
-      printer.log(`LocalStorageManager: Loading deployment progress from ${this.deploymentProgressFile}`, LogLevel.DEBUG);
       if (fs.existsSync(this.deploymentProgressFile)) {
-        printer.log(`LocalStorageManager: Deployment progress file exists`, LogLevel.DEBUG);
         const data = fs.readFileSync(this.deploymentProgressFile, 'utf8');
         const events = JSON.parse(data);
         return events;
       } 
-      printer.log(`LocalStorageManager: Deployment progress file does not exist`, LogLevel.DEBUG);
     } catch (error) {
-      printer.log(`LocalStorageManager: Error loading deployment progress: ${error}`, LogLevel.ERROR);
+      printer.log(`LocalStorageManager: Error loading deployment progress: ${String(error)}`, LogLevel.ERROR);
       if (error instanceof Error) {
         printer.log(`LocalStorageManager: Error stack: ${error.stack}`, LogLevel.ERROR);
       }
@@ -111,7 +131,7 @@ export class LocalStorageManager {
     try {
       fs.writeFileSync(this.resourcesFile, JSON.stringify(resources, null, 2));
     } catch (error) {
-      printer.log(`Error saving resources: ${error}`, LogLevel.ERROR);
+      printer.log(`Error saving resources: ${String(error)}`, LogLevel.ERROR);
     }
   }
 
@@ -126,7 +146,7 @@ export class LocalStorageManager {
         return JSON.parse(data);
       }
     } catch (error) {
-      printer.log(`Error loading resources: ${error}`, LogLevel.ERROR);
+      printer.log(`Error loading resources: ${String(error)}`, LogLevel.ERROR);
     }
     return null;
   }
@@ -141,7 +161,7 @@ export class LocalStorageManager {
         printer.log(`LocalStorageManager: Cleared saved resources`, LogLevel.INFO);
       }
     } catch (error) {
-      printer.log(`Error clearing resources: ${error}`, LogLevel.ERROR);
+      printer.log(`Error clearing resources: ${String(error)}`, LogLevel.ERROR);
     }
   }
 
@@ -155,7 +175,7 @@ export class LocalStorageManager {
       const filePath = path.join(this.logsDir, filename);
       fs.writeFileSync(filePath, JSON.stringify(logs, null, 2));
     } catch (error) {
-      printer.log(`Error saving console logs: ${error}`, LogLevel.ERROR);
+      printer.log(`Error saving console logs: ${String(error)}`, LogLevel.ERROR);
     }
   }
 
@@ -172,7 +192,7 @@ export class LocalStorageManager {
         return JSON.parse(data);
       }
     } catch (error) {
-      printer.log(`Error loading console logs: ${error}`, LogLevel.ERROR);
+      printer.log(`Error loading console logs: ${String(error)}`, LogLevel.ERROR);
     }
     return [];
   }
@@ -237,7 +257,7 @@ export class LocalStorageManager {
    * @param resourceId The ID of the resource
    * @param logs The logs to save
    */
-  saveCloudWatchLogs(resourceId: string, logs: any[]): void {
+  saveCloudWatchLogs(resourceId: string, logs: CloudWatchLogEntry[]): void {
     try {
       // Check if logs exceed size limit before saving
       if (this.logsExceedSizeLimit()) {
@@ -246,11 +266,9 @@ export class LocalStorageManager {
       }
       
       const filePath = path.join(this.cloudWatchLogsDir, `${resourceId}.json`);
-      printer.log(`LocalStorageManager: Saving CloudWatch logs for resource ${resourceId} to ${filePath}`, LogLevel.DEBUG);
       fs.writeFileSync(filePath, JSON.stringify(logs, null, 2));
-      printer.log(`LocalStorageManager: CloudWatch logs saved successfully for resource ${resourceId}`, LogLevel.DEBUG);
     } catch (error) {
-      printer.log(`LocalStorageManager: Error saving CloudWatch logs for resource ${resourceId}: ${error}`, LogLevel.ERROR);
+      printer.log(`LocalStorageManager: Error saving CloudWatch logs for resource ${resourceId}: ${String(error)}`, LogLevel.ERROR);
       if (error instanceof Error) {
         printer.log(`LocalStorageManager: Error stack: ${error.stack}`, LogLevel.DEBUG);
       }
@@ -262,18 +280,16 @@ export class LocalStorageManager {
    * @param resourceId The ID of the resource
    * @returns The saved logs or an empty array if none exist
    */
-  loadCloudWatchLogs(resourceId: string): any[] {
+  loadCloudWatchLogs(resourceId: string): CloudWatchLogEntry[] {
     try {
       const filePath = path.join(this.cloudWatchLogsDir, `${resourceId}.json`);
-      printer.log(`LocalStorageManager: Loading CloudWatch logs for resource ${resourceId} from ${filePath}`, LogLevel.DEBUG);
       if (fs.existsSync(filePath)) {
         const data = fs.readFileSync(filePath, 'utf8');
         const logs = JSON.parse(data);
         return logs;
       }
-      printer.log(`LocalStorageManager: CloudWatch logs file does not exist for resource ${resourceId}`, LogLevel.DEBUG);
     } catch (error) {
-      printer.log(`LocalStorageManager: Error loading CloudWatch logs for resource ${resourceId}: ${error}`, LogLevel.ERROR);
+      printer.log(`LocalStorageManager: Error loading CloudWatch logs for resource ${resourceId}: ${String(error)}`, LogLevel.ERROR);
       if (error instanceof Error) {
         printer.log(`LocalStorageManager: Error stack: ${error.stack}`, LogLevel.ERROR);
       }
@@ -287,18 +303,15 @@ export class LocalStorageManager {
    */
   getResourcesWithCloudWatchLogs(): string[] {
     try {
-      printer.log(`LocalStorageManager: Getting resources with CloudWatch logs from ${this.cloudWatchLogsDir}`, LogLevel.DEBUG);
       if (fs.existsSync(this.cloudWatchLogsDir)) {
         const files = fs.readdirSync(this.cloudWatchLogsDir);
         const resourceIds = files
           .filter(file => file.endsWith('.json'))
           .map(file => file.replace('.json', ''));
-        printer.log(`LocalStorageManager: Found ${resourceIds.length} resources with CloudWatch logs`, LogLevel.DEBUG);
         return resourceIds;
       }
-      printer.log(`LocalStorageManager: CloudWatch logs directory does not exist`, LogLevel.DEBUG);
     } catch (error) {
-      printer.log(`LocalStorageManager: Error getting resources with CloudWatch logs: ${error}`, LogLevel.DEBUG);
+      printer.log(`LocalStorageManager: Error getting resources with CloudWatch logs: ${String(error)}`, LogLevel.ERROR);
       if (error instanceof Error) {
         printer.log(`LocalStorageManager: Error stack: ${error.stack}`, LogLevel.DEBUG);
       }
@@ -311,13 +324,13 @@ export class LocalStorageManager {
    * @param resourceId The ID of the resource
    * @param logEntry The log entry to append
    */
-  appendCloudWatchLog(resourceId: string, logEntry: any): void {
+  appendCloudWatchLog(resourceId: string, logEntry: CloudWatchLogEntry): void {
     try {
       const logs = this.loadCloudWatchLogs(resourceId);
       logs.push(logEntry);
       this.saveCloudWatchLogs(resourceId, logs);
     } catch (error) {
-      printer.log(`LocalStorageManager: Error appending CloudWatch log for resource ${resourceId}: ${error}`, LogLevel.ERROR);
+      printer.log(`LocalStorageManager: Error appending CloudWatch log for resource ${resourceId}: ${String(error)}`, LogLevel.ERROR);
       if (error instanceof Error) {
         printer.log(`LocalStorageManager: Error stack: ${error.stack}`, LogLevel.ERROR);
       }
@@ -328,13 +341,13 @@ export class LocalStorageManager {
    * Appends a deployment progress event
    * @param event The event to append
    */
-  appendDeploymentProgressEvent(event: Record<string, unknown>): void {
+  appendDeploymentProgressEvent(event: DeploymentEvent): void {
     try {
       const events = this.loadDeploymentProgress();
       events.push(event);
       this.saveDeploymentProgress(events);
     } catch (error) {
-      printer.log(`Error appending deployment progress event: ${error}`, LogLevel.ERROR);
+      printer.log(`Error appending deployment progress event: ${String(error)}`, LogLevel.ERROR);
     }
   }
 
@@ -345,7 +358,7 @@ export class LocalStorageManager {
     try {
       this.saveDeploymentProgress([]);
     } catch (error) {
-      printer.log(`Error clearing deployment progress: ${error}`, LogLevel.ERROR);
+      printer.log(`Error clearing deployment progress: ${String(error)}`, LogLevel.ERROR);
     }
   }
 
@@ -378,7 +391,7 @@ export class LocalStorageManager {
         }
       }
     } catch (error) {
-      printer.log(`Error clearing all data: ${error}`, LogLevel.ERROR);
+      printer.log(`Error clearing all data: ${String(error)}`, LogLevel.ERROR);
     }
   }
 
@@ -405,7 +418,7 @@ export class LocalStorageManager {
         'utf8'
       );
     } catch (error) {
-      printer.log(`Error saving resource logging state for ${resourceId}: ${error}`, LogLevel.ERROR);
+      printer.log(`Error saving resource logging state for ${resourceId}: ${String(error)}`, LogLevel.ERROR);
     }
   }
 
@@ -420,7 +433,7 @@ export class LocalStorageManager {
         return JSON.parse(content);
       }
     } catch (error) {
-      printer.log(`Error loading resource logging states: ${error}`, LogLevel.ERROR);
+      printer.log(`Error loading resource logging states: ${String(error)}`, LogLevel.ERROR);
     }
     return null;
   }
@@ -459,9 +472,8 @@ export class LocalStorageManager {
         JSON.stringify(friendlyNames, null, 2),
         'utf8'
       );
-      printer.log(`LocalStorageManager: Saved custom friendly names`, LogLevel.DEBUG);
     } catch (error) {
-      printer.log(`Error saving custom friendly names: ${error}`, LogLevel.ERROR);
+      printer.log(`Error saving custom friendly names: ${String(error)}`, LogLevel.ERROR);
     }
   }
 
@@ -476,7 +488,7 @@ export class LocalStorageManager {
         return JSON.parse(content);
       }
     } catch (error) {
-      printer.log(`Error loading custom friendly names: ${error}`, LogLevel.ERROR);
+      printer.log(`Error loading custom friendly names: ${String(error)}`, LogLevel.ERROR);
     }
     return {};
   }
@@ -493,7 +505,7 @@ export class LocalStorageManager {
       this.saveCustomFriendlyNames(friendlyNames);
       printer.log(`LocalStorageManager: Updated custom friendly name for ${resourceId}`, LogLevel.DEBUG);
     } catch (error) {
-      printer.log(`Error updating custom friendly name: ${error}`, LogLevel.ERROR);
+      printer.log(`Error updating custom friendly name: ${String(error)}`, LogLevel.ERROR);
     }
   }
 
@@ -507,10 +519,9 @@ export class LocalStorageManager {
       if (friendlyNames[resourceId]) {
         delete friendlyNames[resourceId];
         this.saveCustomFriendlyNames(friendlyNames);
-        printer.log(`LocalStorageManager: Removed custom friendly name for ${resourceId}`, LogLevel.DEBUG);
       }
     } catch (error) {
-      printer.log(`Error removing custom friendly name: ${error}`, LogLevel.ERROR);
+      printer.log(`Error removing custom friendly name: ${String(error)}`, LogLevel.ERROR);
     }
   }
 
@@ -519,27 +530,17 @@ export class LocalStorageManager {
    */
   private ensureDirectories(): void {
     try {
-      printer.log(`LocalStorageManager: Checking if base directory exists: ${this.baseDir}`, LogLevel.DEBUG);
       if (!fs.existsSync(this.baseDir)) {
-        printer.log(`LocalStorageManager: Creating base directory: ${this.baseDir}`, LogLevel.DEBUG);
         fs.mkdirSync(this.baseDir, { recursive: true });
       }
       
-      printer.log(`LocalStorageManager: Checking if logs directory exists: ${this.logsDir}`, LogLevel.DEBUG);
       if (!fs.existsSync(this.logsDir)) {
-        printer.log(`LocalStorageManager: Creating logs directory: ${this.logsDir}`, LogLevel.DEBUG);
         fs.mkdirSync(this.logsDir, { recursive: true });
-        printer.log(`LocalStorageManager: Logs directory created successfully`, LogLevel.DEBUG);
       }
-      
-      printer.log(`LocalStorageManager: Checking if CloudWatch logs directory exists: ${this.cloudWatchLogsDir}`, LogLevel.DEBUG);
+    
       if (!fs.existsSync(this.cloudWatchLogsDir)) {
-        printer.log(`LocalStorageManager: Creating CloudWatch logs directory: ${this.cloudWatchLogsDir}`, LogLevel.DEBUG);
         fs.mkdirSync(this.cloudWatchLogsDir, { recursive: true });
-        printer.log(`LocalStorageManager: CloudWatch logs directory created successfully`, LogLevel.DEBUG);
-      } else {
-        printer.log(`LocalStorageManager: CloudWatch logs directory already exists`, LogLevel.DEBUG);
-      }
+      } 
       
       // Test write permissions by creating a test file
       const testFilePath = path.join(this.baseDir, 'test-write-permissions.txt');
@@ -550,10 +551,10 @@ export class LocalStorageManager {
         // Clean up test file
         fs.unlinkSync(testFilePath);
       } catch (writeError) {
-        printer.log(`LocalStorageManager: Write permissions test failed: ${writeError}`, LogLevel.ERROR);
+        printer.log(`LocalStorageManager: Write permissions test failed: ${String(writeError)}`, LogLevel.ERROR);
       }
     } catch (error) {
-      printer.log(`LocalStorageManager: Error creating directories: ${error}`, LogLevel.ERROR);
+      printer.log(`LocalStorageManager: Error creating directories: ${String(error)}`, LogLevel.ERROR);
       if (error instanceof Error) {
         printer.log(`LocalStorageManager: Error stack: ${error.stack}`, LogLevel.DEBUG);
       }
@@ -562,14 +563,14 @@ export class LocalStorageManager {
   
   /**
    * Saves settings to a file
-   * @param settings.maxLogSizeMB The maximum log size in MB
+   * @param settings The maximum log size in MB
    */
   private saveSettings(settings: { maxLogSizeMB: number }): void {
     try {
       const settingsFile = path.join(this.baseDir, 'settings.json');
       fs.writeFileSync(settingsFile, JSON.stringify(settings, null, 2));
     } catch (error) {
-      printer.log(`Error saving settings: ${error}`, LogLevel.ERROR);
+      printer.log(`Error saving settings: ${String(error)}`, LogLevel.ERROR);
     }
   }
 
@@ -585,7 +586,7 @@ export class LocalStorageManager {
         return JSON.parse(data);
       }
     } catch (error) {
-      printer.log(`Error loading settings: ${error}`, LogLevel.ERROR);
+      printer.log(`Error loading settings: ${String(error)}`, LogLevel.ERROR);
     }
     return { maxLogSizeMB: this.defaultMaxLogSizeMB };
   }
@@ -626,10 +627,9 @@ export class LocalStorageManager {
         }
         
         fs.unlinkSync(file.path);
-        printer.log(`LocalStorageManager: Removed old log file: ${file.path}`, LogLevel.DEBUG);
       }
     } catch (error) {
-      printer.log(`LocalStorageManager: Error pruning old logs: ${error}`, LogLevel.ERROR);
+      printer.log(`LocalStorageManager: Error pruning old logs: ${String(error)}`, LogLevel.ERROR);
     }
   }
 }

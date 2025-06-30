@@ -1,19 +1,11 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert';
 import {
+  type ResourceWithFriendlyName,
   canProvideConsoleLink,
   getAwsConsoleUrl,
   isGlobalService,
 } from './resource_console_functions.js';
-
-// Define the ResourceWithFriendlyName interface to match what's used in the code
-interface ResourceWithFriendlyName {
-  logicalResourceId: string;
-  physicalResourceId: string;
-  resourceType: string;
-  resourceStatus: string;
-  friendlyName: string;
-}
 
 // Test resources
 const testResources: ResourceWithFriendlyName[] = [

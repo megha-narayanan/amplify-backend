@@ -43,9 +43,9 @@ export class ShutdownService {
         await this.sandbox.stop();
         printer.log('Sandbox stopped successfully', LogLevel.INFO);
       } catch (error) {
-        printer.log(`Error stopping sandbox: ${error}`, LogLevel.ERROR);
+        printer.log(`Error stopping sandbox: ${String(error)}`, LogLevel.ERROR);
         if (error instanceof Error && error.stack) {
-          printer.log(`DEBUG: Error stack: ${error.stack}`, LogLevel.DEBUG);
+          printer.log(`Error stack: ${error.stack}`, LogLevel.DEBUG);
         }
       }
     }
@@ -62,18 +62,17 @@ export class ShutdownService {
     });
     
     // Close socket and server connections
-    this.io.close();
+    await this.io.close();
     this.server.close();
     
     // Exit the process if requested
     if (exitProcess) {
       // Short delay to allow messages to be sent
       setTimeout(() => {
-        process.exit(0);
+        void process.exit(0);
       }, 500);
     }
     
-    // Return a resolved promise to satisfy no-floating-promises rule
     return Promise.resolve();
   }
 }

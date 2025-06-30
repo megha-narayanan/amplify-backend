@@ -4,16 +4,31 @@
  * Utility functions for AWS console resource handling
  * These functions are used by both the React component and test files
  */
+import { DeployedBackendResource } from '@aws-amplify/deployed-backend-client';
 
 /**
- * Interface for resource with friendly name
+ * Extended resource type with friendly name
  */
-export type ResourceWithFriendlyName = {
-  logicalResourceId: string;
-  physicalResourceId: string;
-  resourceType: string;
-  resourceStatus: string;
+export type ResourceWithFriendlyName = DeployedBackendResource & {
+  logicalResourceId: string; // Make required
+  physicalResourceId: string; // Make required  
+  resourceType: string; // Make required
+  resourceStatus: string; // Make required
   friendlyName?: string;
+};
+
+/**
+ * Type guard to ensure required fields exist in a resource
+ */
+export const isCompleteResource = (
+  resource: DeployedBackendResource
+): resource is Required<Pick<DeployedBackendResource, 'logicalResourceId' | 'physicalResourceId' | 'resourceType' | 'resourceStatus'>> & DeployedBackendResource => {
+  return Boolean(
+    resource.logicalResourceId && 
+    resource.physicalResourceId && 
+    resource.resourceType && 
+    resource.resourceStatus
+  );
 };
 
 /**

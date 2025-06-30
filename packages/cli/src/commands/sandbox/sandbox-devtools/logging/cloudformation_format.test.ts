@@ -1,11 +1,11 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert';
 import {
-  createFriendlyName,
   cleanAnsiCodes,
-  isDeploymentProgressMessage,
-  extractCloudFormationEvents
-} from './utils/cloudformation_utils.js';
+  createFriendlyName,
+  extractCloudFormationEvents,
+  isDeploymentProgressMessage
+} from './cloudformation_format.js';
 
 void describe('createFriendlyName function', () => {
   void it('handles empty string by returning the original ID', () => {
@@ -19,9 +19,31 @@ void describe('createFriendlyName function', () => {
     assert.strictEqual(createFriendlyName(logicalId, metadata), 'MyStack/MyFunction/Resource');
   });
 
-  void it('removes amplify prefix and breaks up', () => {
+  void it('removes amplify prefix and formats camel case', () => {
     const logicalId = 'amplifyDataTable123ABC45';
     assert.strictEqual(createFriendlyName(logicalId), 'Data Table A B C45');
+  });
+  
+  void it('removes Amplify prefix (capitalized) and formats camel case', () => {
+    const logicalId = 'AmplifyDataTable123ABC45';
+    assert.strictEqual(createFriendlyName(logicalId), 'Data Table A B C45');
+  });
+  
+  void it('handles IDs with only numeric characters', () => {
+    const numericId = '12345';
+    assert.strictEqual(createFriendlyName(numericId), numericId);
+  });
+  
+  void it('normalizes CDK construct paths', () => {
+    const logicalId = 'amplifyFunction';
+    const metadata = { constructPath: 'MyStack/auth.NestedStack/auth.NestedStackResource' };
+    assert.strictEqual(createFriendlyName(logicalId, metadata), 'MyStack/auth');
+  });
+  
+  void it('removes amplify prefixes from CDK construct paths', () => {
+    const logicalId = 'amplifyFunction';
+    const metadata = { constructPath: 'MyStack/amplifyAuth/MyFunction' };
+    assert.strictEqual(createFriendlyName(logicalId, metadata), 'MyStack/MyFunction');
   });
 });
 
@@ -39,6 +61,11 @@ void describe('cleanAnsiCodes function', () => {
   void it('returns original text when no ANSI codes are present', () => {
     const plainText = 'Plain text';
     assert.strictEqual(cleanAnsiCodes(plainText), plainText);
+  });
+  
+  void it('handles specific ANSI code formats', () => {
+    const text = 'Text with [2mDim[22m and [1mBold[22m formatting';
+    assert.strictEqual(cleanAnsiCodes(text), 'Text with Dim and Bold formatting');
   });
 });
 
@@ -62,6 +89,11 @@ void describe('isDeploymentProgressMessage function', () => {
     assert.strictEqual(isDeploymentProgressMessage('Regular log message'), false);
     assert.strictEqual(isDeploymentProgressMessage('Error: something went wrong'), false);
   });
+  
+  void it('handles messages with ANSI color codes', () => {
+    const coloredMessage = '\u001b[32mCREATE_COMPLETE\u001b[0m';
+    assert.strictEqual(isDeploymentProgressMessage(coloredMessage), true);
+  });
 });
 
 void describe('extractCloudFormationEvents function', () => {
@@ -84,5 +116,12 @@ void describe('extractCloudFormationEvents function', () => {
     const logMessage = 'Regular log message without CloudFormation events';
     const events = extractCloudFormationEvents(logMessage);
     assert.strictEqual(events.length, 0);
+  });
+  
+  void it('handles events with PM time format', () => {
+    const logMessage = '2:15:30 PM | CREATE_IN_PROGRESS | AWS::Lambda::Function | MyFunction';
+    const events = extractCloudFormationEvents(logMessage);
+    assert.strictEqual(events.length, 1);
+    assert.strictEqual(events[0], '2:15:30 PM | CREATE_IN_PROGRESS | AWS::Lambda::Function | MyFunction');
   });
 });

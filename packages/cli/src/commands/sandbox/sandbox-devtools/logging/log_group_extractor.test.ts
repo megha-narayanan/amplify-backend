@@ -1,6 +1,7 @@
+/* eslint-disable spellcheck/spell-checker */
 import { describe, it, mock } from 'node:test';
 import assert from 'node:assert';
-import { getLogGroupName } from './logging_utils.js';
+import { getLogGroupName } from './log_group_extractor.js';
 import { LogLevel, printer } from '@aws-amplify/cli-core';
 
 void describe('getLogGroupName function', () => {

@@ -6,16 +6,15 @@ import {
   GetLogEventsCommand 
 } from '@aws-sdk/client-cloudwatch-logs';
 import { Sandbox } from '@aws-amplify/sandbox';
-import { CloudFormationClient } from '@aws-sdk/client-cloudformation';
 import { LocalStorageManager } from '../local_storage_manager.js';
-import { getLogGroupName } from '../utils/logging_utils.js';
-import { createFriendlyName } from '../utils/cloudformation_utils.js';
-import { ResourceWithFriendlyName } from '../resource_console_functions.js';
+import { getLogGroupName } from '../logging/log_group_extractor.js';
+import { ClientConfigFormat } from '@aws-amplify/client-config';
+import { ResourceService } from './resource_service.js';
 
 /**
  * Interface for socket event data types
  */
-export interface SocketEvents {
+export type SocketEvents = {
   toggleResourceLogging: { 
     resourceId: string; 
     resourceType: string; 
@@ -45,7 +44,7 @@ export interface SocketEvents {
     message: string; 
     timestamp: string 
   };
-  AMPLIFY_CFN_PROGRESS_UPDATE: { 
+  amplifyCloudFormationProgressUpdate: { 
     message: string 
   };
   getDeployedBackendResources: void;
@@ -66,41 +65,30 @@ export interface SocketEvents {
   stopDevTools: void;
   getSavedDeploymentProgress: void;
   getSavedResources: void;
-}
+};
+
 
 /**
  * Service for handling socket events
  */
 export class SocketHandlerService {
-  private io: Server;
-  private storageManager: LocalStorageManager;
-  private activeLogPollers = new Map<string, NodeJS.Timeout>();
-  private sandbox: Sandbox;
-  private getSandboxState: () => string;
-  private backendId: { name: string };
-  private shutdownService: import('./shutdown_service.js').ShutdownService;
-  private backendClient: Record<string, unknown>; 
+  
 
   /**
    * Creates a new SocketHandlerService
    */
   constructor(
-    io: Server,
-    storageManager: LocalStorageManager,
-    sandbox: Sandbox,
-    getSandboxState: () => string,
-    backendId: { name: string },
-    shutdownService: import('./shutdown_service.js').ShutdownService,
-    backendClient?: Record<string, unknown>
-  ) {
-    this.io = io;
-    this.storageManager = storageManager;
-    this.sandbox = sandbox;
-    this.getSandboxState = getSandboxState;
-    this.backendId = backendId;
-    this.shutdownService = shutdownService;
-    this.backendClient = backendClient || {};
-  }
+    private io: Server,
+    private sandbox: Sandbox,
+    private getSandboxState: () => string,
+    private backendId: { name: string },
+    private shutdownService: import('./shutdown_service.js').ShutdownService,
+    private backendClient: Record<string, unknown>,
+    private storageManager: LocalStorageManager,
+    private resourceService: ResourceService,
+    // eslint-disable-next-line spellcheck/spell-checker
+    private activeLogPollers = new Map<string, NodeJS.Timeout>(),
+  ){}
 
   /**
    * Sets up all socket event handlers
@@ -125,7 +113,7 @@ export class SocketHandlerService {
     // Sandbox status handlers
     socket.on('getSandboxStatus', this.handleGetSandboxStatus.bind(this, socket));
     socket.on('deploymentInProgress', this.handleDeploymentInProgress.bind(this, socket));
-    socket.on('AMPLIFY_CFN_PROGRESS_UPDATE', this.handleAmplifyCloudFormationProgressUpdate.bind(this, socket));
+    socket.on('amplifyCloudFormationProgressUpdate', this.handleAmplifyCloudFormationProgressUpdate.bind(this, socket));
     
     // Resource handlers
     socket.on('getDeployedBackendResources', this.handleGetDeployedBackendResources.bind(this, socket));
@@ -138,7 +126,7 @@ export class SocketHandlerService {
     socket.on('deleteSandbox', this.handleDeleteSandbox.bind(this, socket));
     
     // DevTools handlers
-    socket.on('stopDevTools', this.handleStopDevTools.bind(this, socket));
+    socket.on('stopDevTools', this.handleStopDevTools.bind(this));
   }
 
   /**
@@ -151,6 +139,7 @@ export class SocketHandlerService {
     
     if (data.startLogging) {
       // Start logging if not already active
+      // eslint-disable-next-line spellcheck/spell-checker
       if (!this.activeLogPollers.has(data.resourceId)) {
         try {
           // Check if resource type is defined
@@ -206,57 +195,56 @@ export class SocketHandlerService {
           let nextToken: string | undefined = undefined;
           
           // Function to fetch and save logs
-          const fetchLogs = async () => {
-            try {
-              const getLogsResponse = await cwLogsClient.send(
-                new GetLogEventsCommand({
-                  logGroupName,
-                  logStreamName,
-                  nextToken,
-                  startFromHead: true
-                })
-              );
-              
-              // Update next token for next poll
-              nextToken = getLogsResponse.nextForwardToken;
-              
-              // Process and save logs
-              if (getLogsResponse.events && getLogsResponse.events.length > 0) {
-                const logs = getLogsResponse.events.map(event => ({
-                  timestamp: event.timestamp ? new Date(event.timestamp).toISOString() : new Date().toISOString(),
-                  message: event.message || ''
-                }));
+          const fetchLogs = () => {
+            void (async () => {
+              try {
+                const getLogsResponse = await cwLogsClient.send(
+                  new GetLogEventsCommand({
+                    logGroupName,
+                    logStreamName,
+                    nextToken,
+                    startFromHead: true
+                  })
+                );
                 
-                // Save logs to local storage
-                logs.forEach((log: { timestamp: string; message: string }) => {
-                  this.storageManager.appendCloudWatchLog(data.resourceId, log);
-                });
+                // Update next token for next poll
+                nextToken = getLogsResponse.nextForwardToken;
                 
-                // Emit logs to all clients
-                this.io.emit('resourceLogs', {
+                // Process and save logs
+                if (getLogsResponse.events && getLogsResponse.events.length > 0) {
+                  const logs = getLogsResponse.events.map(event => ({
+                    timestamp: event.timestamp || Date.now(),
+                    message: event.message || ''
+                  }));
+                  
+                  // Save logs to local storage
+                  logs.forEach((log: { timestamp: number; message: string }) => {
+                    this.storageManager.appendCloudWatchLog(data.resourceId, log);
+                  });
+                  
+                  // Emit logs to all clients
+                  this.io.emit('resourceLogs', {
+                    resourceId: data.resourceId,
+                    logs
+                  });
+                }
+              } catch (error) {
+                printer.log(`Error fetching logs for ${data.resourceId}: ${String(error)}`, LogLevel.ERROR);
+                socket.emit('logStreamError', {
                   resourceId: data.resourceId,
-                  logs
+                  error: `Error fetching logs: ${String(error)}`
                 });
               }
-            } catch (error) {
-              printer.log(`Error fetching logs for ${data.resourceId}: ${error}`, LogLevel.ERROR);
-              socket.emit('logStreamError', {
-                resourceId: data.resourceId,
-                error: `Error fetching logs: ${error}`
-              });
-            }
+            })();
           };
           
           // Initial fetch
-          await fetchLogs();
+          fetchLogs();
           
           // Set up polling interval with more frequent polling since we're only using this approach
           const pollingInterval = setInterval(fetchLogs, 2000); // Poll every 2 seconds
-          
-          // Store polling interval
           this.activeLogPollers.set(data.resourceId, pollingInterval);
           
-          // Save the logging state to local storage
           this.storageManager.saveResourceLoggingState(data.resourceId, true);
           
           // Notify client that logs are now being recorded
@@ -272,10 +260,10 @@ export class SocketHandlerService {
           });
           
         } catch (error) {
-          printer.log(`Error starting log stream for ${data.resourceId}: ${error}`, LogLevel.ERROR);
+          printer.log(`Error starting log stream for ${data.resourceId}: ${String(error)}`, LogLevel.ERROR);
           socket.emit('logStreamError', {
             resourceId: data.resourceId,
-            error: `Failed to start log stream: ${error}`
+            error: `Failed to start log stream: ${String(error)}`
           });
         }
       } else {
@@ -303,17 +291,14 @@ export class SocketHandlerService {
       if (pollingInterval) {
         // Stop polling
         clearInterval(pollingInterval);
+        // eslint-disable-next-line spellcheck/spell-checker
         this.activeLogPollers.delete(data.resourceId);
         
         printer.log(`Stopped log polling for resource ${data.resourceId}`, LogLevel.INFO);
       }
-      
-      // Make sure we don't lose any logs when stopping
+
       const existingLogs = this.storageManager.loadCloudWatchLogs(data.resourceId);
-      printer.log(`DEBUG: Found ${existingLogs.length} existing logs for ${data.resourceId} before stopping`, LogLevel.DEBUG);
       
-      // Save the logging state to local storage
-      printer.log(`DEBUG: Saving inactive logging state for resource ${data.resourceId}`, LogLevel.DEBUG);
       this.storageManager.saveResourceLoggingState(data.resourceId, false);
       
       // Notify client that logs are no longer being recorded
@@ -354,12 +339,12 @@ export class SocketHandlerService {
         logs: logs || [] // Ensure we always send an array, even if no logs exist
       });
     } catch (error) {
-      printer.log(`Error handling viewResourceLogs event: ${error}`, LogLevel.ERROR);
+      printer.log(`Error handling viewResourceLogs event: ${String(error)}`, LogLevel.ERROR);
       
       // Notify client of error
       socket.emit('logStreamError', {
         resourceId: data.resourceId,
-        error: `Error loading logs: ${error}`
+        error: `Error loading logs: ${String(error)}`
       });
     }
   }
@@ -368,9 +353,7 @@ export class SocketHandlerService {
    * Handles the getSavedResourceLogs event
    */
   private handleGetSavedResourceLogs(socket: Socket, data: SocketEvents['getSavedResourceLogs']): void {
-    printer.log(`DEBUG: getSavedResourceLogs event received for ${data.resourceId}`, LogLevel.DEBUG);
     const logs = this.storageManager.loadCloudWatchLogs(data.resourceId);
-    printer.log(`DEBUG: Found ${logs.length} saved logs for ${data.resourceId}`, LogLevel.DEBUG);
     socket.emit('savedResourceLogs', {
       resourceId: data.resourceId,
       logs
@@ -381,9 +364,7 @@ export class SocketHandlerService {
    * Handles the getActiveLogStreams event
    */
   private handleGetActiveLogStreams(socket: Socket): void {
-    printer.log('DEBUG: getActiveLogStreams event received', LogLevel.DEBUG);
     const resourceIds = this.storageManager.getResourcesWithActiveLogging();
-    printer.log(`DEBUG: Active log streams: ${resourceIds.join(', ') || 'none'}`, LogLevel.DEBUG);
     socket.emit('activeLogStreams', resourceIds);
   }
 
@@ -391,7 +372,6 @@ export class SocketHandlerService {
    * Handles the getLogSettings event
    */
   private handleGetLogSettings(socket: Socket): void {
-    printer.log('DEBUG: getLogSettings event received', LogLevel.DEBUG);
     // Get current log size
     const currentSizeMB = this.storageManager.getLogsSizeInMB();
     
@@ -405,28 +385,28 @@ export class SocketHandlerService {
    * Handles the saveLogSettings event
    */
   private handleSaveLogSettings(socket: Socket, settings: SocketEvents['saveLogSettings']): void {
-    printer.log(`DEBUG: saveLogSettings event received: ${JSON.stringify(settings)}`, LogLevel.DEBUG);
-    if (settings && typeof settings.maxLogSizeMB === 'number') {
-      this.storageManager.setMaxLogSize(settings.maxLogSizeMB);
-      
-      // Get updated log size
-      const currentSizeMB = this.storageManager.getLogsSizeInMB();
-      
-      // Broadcast the updated settings to all clients
-      this.io.emit('logSettings', { 
-        maxLogSizeMB: settings.maxLogSizeMB,
-        currentSizeMB
-      });
-      
-      printer.log(`Log settings updated: Max size set to ${settings.maxLogSizeMB} MB`, LogLevel.INFO);
+    if (!settings || typeof settings.maxLogSizeMB !== 'number') {
+      return;
     }
+    
+    this.storageManager.setMaxLogSize(settings.maxLogSizeMB);
+    
+    // Get updated log size
+    const currentSizeMB = this.storageManager.getLogsSizeInMB();
+    
+    // Broadcast the updated settings to all clients
+    this.io.emit('logSettings', { 
+      maxLogSizeMB: settings.maxLogSizeMB,
+      currentSizeMB
+    });
+    
+    printer.log(`Log settings updated: Max size set to ${settings.maxLogSizeMB} MB`, LogLevel.INFO);
   }
 
   /**
    * Handles the getCustomFriendlyNames event
    */
   private handleGetCustomFriendlyNames(socket: Socket): void {
-    printer.log('DEBUG: getCustomFriendlyNames event received', LogLevel.DEBUG);
     const friendlyNames = this.storageManager.loadCustomFriendlyNames();
     socket.emit('customFriendlyNames', friendlyNames);
   }
@@ -435,35 +415,37 @@ export class SocketHandlerService {
    * Handles the updateCustomFriendlyName event
    */
   private handleUpdateCustomFriendlyName(socket: Socket, data: SocketEvents['updateCustomFriendlyName']): void {
-    printer.log(`DEBUG: updateCustomFriendlyName event received for ${data.resourceId}: ${data.friendlyName}`, LogLevel.DEBUG);
-    if (data && data.resourceId && data.friendlyName) {
-      this.storageManager.updateCustomFriendlyName(data.resourceId, data.friendlyName);
-      
-      // Broadcast the updated friendly name to all clients
-      this.io.emit('customFriendlyNameUpdated', { 
-        resourceId: data.resourceId,
-        friendlyName: data.friendlyName
-      });
-      
-      printer.log(`Custom friendly name updated for ${data.resourceId}: ${data.friendlyName}`, LogLevel.INFO);
+    if (!data || !data.resourceId || !data.friendlyName) {
+      return;
     }
+    
+    this.storageManager.updateCustomFriendlyName(data.resourceId, data.friendlyName);
+    
+    // Broadcast the updated friendly name to all clients
+    this.io.emit('customFriendlyNameUpdated', { 
+      resourceId: data.resourceId,
+      friendlyName: data.friendlyName
+    });
+    
+    printer.log(`Custom friendly name updated for ${data.resourceId}: ${data.friendlyName}`, LogLevel.INFO);
   }
 
   /**
    * Handles the removeCustomFriendlyName event
    */
   private handleRemoveCustomFriendlyName(socket: Socket, data: SocketEvents['removeCustomFriendlyName']): void {
-    printer.log(`DEBUG: removeCustomFriendlyName event received for ${data.resourceId}`, LogLevel.DEBUG);
-    if (data && data.resourceId) {
-      this.storageManager.removeCustomFriendlyName(data.resourceId);
-      
-      // Broadcast the removal to all clients
-      this.io.emit('customFriendlyNameRemoved', { 
-        resourceId: data.resourceId
-      });
-      
-      printer.log(`Custom friendly name removed for ${data.resourceId}`, LogLevel.INFO);
+    if (!data || !data.resourceId) {
+      return;
     }
+    
+    this.storageManager.removeCustomFriendlyName(data.resourceId);
+    
+    // Broadcast the removal to all clients
+    this.io.emit('customFriendlyNameRemoved', { 
+      resourceId: data.resourceId
+    });
+    
+    printer.log(`Custom friendly name removed for ${data.resourceId}`, LogLevel.INFO);
   }
 
   /**
@@ -478,10 +460,10 @@ export class SocketHandlerService {
         identifier: this.backendId.name 
       });
     } catch (error) {
-      printer.log(`Error getting sandbox status on request: ${error}`, LogLevel.ERROR);
+      printer.log(`Error getting sandbox status on request: ${String(error)}`, LogLevel.ERROR);
       socket.emit('sandboxStatus', { 
         status: 'unknown', 
-        error: `${error}`,
+        error: `${String(error)}`,
         identifier: this.backendId.name 
       });
     }
@@ -496,106 +478,14 @@ export class SocketHandlerService {
     this.io.emit('deploymentInProgress', data);
   }
   
-  /**
-   * Fetches backend resources and processes them
-   * @returns The processed resources or null if there was an error
-   */
-  private async fetchBackendResources(): Promise<Record<string, any> | null> {
-    try {
-      // Get the current sandbox state
-      const status = this.getSandboxState();
-      
-      // If sandbox is not running, don't try to fetch resources
-      if (status !== 'running') {
-        printer.log(`Sandbox is not running (status: ${status}), cannot fetch resources`, LogLevel.DEBUG);
-        return null;
-      }
-      
-      printer.log('Fetching backend metadata...', LogLevel.DEBUG);
-      const data = await (this.backendClient as { getBackendMetadata: (id: { name: string }) => Promise<any> }).getBackendMetadata(this.backendId);
-      printer.log(`Successfully fetched backend metadata with ${data.resources?.length || 0} resources`, LogLevel.INFO);
-
-      const cfnClient = new CloudFormationClient();
-      const regionValue = cfnClient.config.region;
-
-      let region = null;
-
-      try {
-        if (typeof regionValue === 'function') {
-          if (regionValue.constructor.name === 'AsyncFunction') {
-            region = await regionValue();
-          } else {
-            region = regionValue();
-          }
-        } else if (regionValue) {
-          region = String(regionValue);
-        }
-
-        // Final check to ensure region is a string
-        if (region && typeof region !== 'string') {
-          region = String(region);
-        }
-      } catch (error) {
-        printer.log('Error processing region: ' + error, LogLevel.ERROR);
-        region = null;
-      }
-
-      // Process resources and add friendly names
-      const resourcesWithFriendlyNames = data.resources.map((resource: any) => {
-        const logicalId = resource.logicalResourceId || '';
-        let resourceType = resource.resourceType || '';
-        
-        // Remove CUSTOM:: prefix from resource type
-        if (resourceType.startsWith('CUSTOM::')) {
-          resourceType = resourceType.substring(8); // Remove "CUSTOM::" (8 characters)
-        } else if (resourceType.startsWith('Custom::')) {
-          resourceType = resourceType.substring(8); // Remove "Custom::" (8 characters)
-        }
-        
-        // Check if the resource has metadata with a construct path
-        const metadata = 'metadata' in resource && 
-                        typeof resource.metadata === 'object' && 
-                        resource.metadata !== null && 
-                        'constructPath' in resource.metadata ? { 
-          constructPath: resource.metadata.constructPath as string
-        } : undefined;
-        
-        return {
-          ...resource,
-          resourceType: resourceType,
-          friendlyName: createFriendlyName(logicalId, metadata),
-        } as ResourceWithFriendlyName;
-      });
-
-      // Add region and resources with friendly names to the data
-      const enhancedData = {
-        ...data,
-        region,
-        resources: resourcesWithFriendlyNames,
-        status
-      };
-      
-      // Save resources to local storage for persistence
-      this.storageManager.saveResources(enhancedData);
-      
-      return enhancedData;
-    } catch (error) {
-      const errorMessage = String(error);
-      printer.log(`Error fetching backend resources: ${errorMessage}`, LogLevel.ERROR);
-      throw error;
-    }
-  }
 
   /**
-   * Handles the AMPLIFY_CFN_PROGRESS_UPDATE event
+   * Handles the amplifyCloudFormationProgressUpdate event
    */
-  private async handleAmplifyCloudFormationProgressUpdate(socket: Socket, data: SocketEvents['AMPLIFY_CFN_PROGRESS_UPDATE']): Promise<void> {
+  private handleAmplifyCloudFormationProgressUpdate(socket: Socket, data: SocketEvents['amplifyCloudFormationProgressUpdate']): void {
     printer.log(`CloudFormation progress update received`, LogLevel.DEBUG);
     // Extract CloudFormation events from the message
     const cfnEvents = this.extractCloudFormationEvents(data.message);
-    
-    // Check if any event indicates deployment completion
-    let deploymentCompleted = false;
     
     // Send each event to the client
     for (const event of cfnEvents) {
@@ -604,20 +494,7 @@ export class SocketHandlerService {
           message: event,
           timestamp: new Date().toISOString()
         });
-        
-        // Check if this event indicates stack completion
-        // Look specifically for the root stack completion which indicates the entire deployment is done
-        if ((event.includes('CREATE_COMPLETE') || event.includes('UPDATE_COMPLETE')) && 
-            event.includes('AWS::CloudFormation::Stack')) {
-          printer.log('Detected CloudFormation stack completion event', LogLevel.INFO);
-          deploymentCompleted = true;
-        }
       }
-    }
-    
-    // If deployment completed, clear resources
-    if (deploymentCompleted) {
-      this.storageManager.clearResources();
     }
   }
 
@@ -628,104 +505,30 @@ export class SocketHandlerService {
     try {
       printer.log('Fetching deployed backend resources...', LogLevel.INFO);
       
-      // Get the current sandbox state
-      const status = this.getSandboxState();
-      
-      // Try to use saved resources first, regardless of sandbox state
-      // Resources only change after deployments, which we handle separately
-      const savedResources = this.storageManager.loadResources();
-      if (savedResources) {
-        printer.log('Found saved resources, returning them', LogLevel.INFO);
-        socket.emit('deployedBackendResources', {
-          ...savedResources,
-          status
-        });
-        return;
-      }
-      
-      // If no saved resources, handle based on sandbox state
-      if (status === 'running') {
-        printer.log('No saved resources found and sandbox is running, fetching resources', LogLevel.INFO);
-        try {
-          const enhancedData = await this.fetchBackendResources();
-          
-          if (enhancedData) {
-            socket.emit('deployedBackendResources', enhancedData);
-            return;
-          }
-        } catch (error) {
-          const errorMessage = String(error);
-          printer.log(`Error getting backend resources: ${errorMessage}`, LogLevel.ERROR);
-          
-          // Check if this is a deployment in progress error
-          if (errorMessage.includes('deployment is in progress')) {
-            socket.emit('deployedBackendResources', {
-              name: this.backendId.name,
-              status: 'deploying',
-              resources: [],
-              region: null,
-              message: 'Sandbox deployment is in progress. Resources will update when deployment completes.'
-            });
-          } else if (errorMessage.includes('does not exist')) {
-            socket.emit('deployedBackendResources', {
-              name: this.backendId.name,
-              status: 'nonexistent',
-              resources: [],
-              region: null,
-              message: 'No sandbox exists. Please create a sandbox first.'
-            });
-          } else {
-            socket.emit('deployedBackendResources', {
-              name: this.backendId.name,
-              status: 'error',
-              resources: [],
-              region: null,
-              message: `Error fetching resources: ${errorMessage}`,
-              error: errorMessage
-            });
-          }
-          return;
-        }
-      } else if (status === 'stopped' || status === 'deploying') {
-        // For stopped sandbox with no saved resources, return basic info
-        printer.log('Sandbox is stopped and no saved resources found', LogLevel.INFO);
+      try {
+        // Use the ResourceService to get deployed backend resources
+        const resources = await this.resourceService.getDeployedBackendResources();
+        socket.emit('deployedBackendResources', resources);
+      } catch (error) {
+        printer.log(`Error checking sandbox status: ${String(error)}`, LogLevel.ERROR);
+        // Ensure we send a consistent response type even for unexpected errors
         socket.emit('deployedBackendResources', {
           name: this.backendId.name,
-          status: status,
+          status: 'error',
           resources: [],
           region: null,
-          message: 'Sandbox is not running and no saved resources were found. Start the sandbox to see resources.'
+          message: `Error checking sandbox status: ${String(error)}`,
+          error: String(error)
         });
-        return;
-      } else if (status === 'nonexistent') {
-        // For nonexistent sandbox, return appropriate message
-        socket.emit('deployedBackendResources', {
-          name: this.backendId.name,
-          status: 'nonexistent',
-          resources: [],
-          region: null,
-          message: 'No sandbox exists. Please create a sandbox first.'
-        });
-        return;
       }
-      
-      // If we get here, something unexpected happened
-      socket.emit('deployedBackendResources', {
-        name: this.backendId.name,
-        status: status || 'unknown',
-        resources: [],
-        region: null,
-        message: `Could not determine sandbox resources. Status: ${status}`
-      });
     } catch (error) {
-      printer.log(`Error checking sandbox status: ${error}`, LogLevel.ERROR);
-      // Ensure we send a consistent response type even for unexpected errors
+      printer.log(`Error in handleGetDeployedBackendResources: ${String(error)}`, LogLevel.ERROR);
       socket.emit('deployedBackendResources', {
         name: this.backendId.name,
         status: 'error',
         resources: [],
         region: null,
-        message: `Error checking sandbox status: ${error}`,
+        message: `Error handling resource request: ${String(error)}`,
         error: String(error)
       });
     }
@@ -735,7 +538,6 @@ export class SocketHandlerService {
    * Handles the getSavedDeploymentProgress event
    */
   private handleGetSavedDeploymentProgress(socket: Socket): void {
-    printer.log('DEBUG: getSavedDeploymentProgress event received', LogLevel.DEBUG);
     const events = this.storageManager.loadDeploymentProgress();
     socket.emit('savedDeploymentProgress', events);
   }
@@ -744,7 +546,6 @@ export class SocketHandlerService {
    * Handles the getSavedResources event
    */
   private handleGetSavedResources(socket: Socket): void {
-    printer.log('DEBUG: getSavedResources event received', LogLevel.DEBUG);
     const resources = this.storageManager.loadResources();
     if (resources) {
       socket.emit('savedResources', resources);
@@ -771,17 +572,19 @@ private async handleStartSandboxWithOptions(socket: Socket, options: SocketEvent
     
     // Prepare sandbox options
     const sandboxOptions = {
-      dir: options.dirToWatch || './amplify',
-      exclude: options.exclude ? options.exclude.split(',') : undefined,
-      identifier: options.identifier,
-      format: options.outputsFormat as any,
-      watchForChanges: !options.once,
-      functionStreamingOptions: {
-        enabled: options.streamFunctionLogs || false,
-        logsFilters: options.logsFilter ? options.logsFilter.split(',') : undefined,
-        logsOutFile: options.logsOutFile
-      }
-    };
+        dir: options.dirToWatch || './amplify',
+        exclude: options.exclude ? options.exclude.split(',') : undefined,
+        identifier: options.identifier,
+        format: options.outputsFormat as ClientConfigFormat | undefined,
+        watchForChanges: !options.once,
+        functionStreamingOptions: {
+          enabled: options.streamFunctionLogs || false,
+          logsFilters: options.logsFilter
+            ? options.logsFilter.split(',')
+            : undefined,
+          logsOutFile: options.logsOutFile,
+        },
+      };
     
     // Actually start the sandbox
     await this.sandbox.start(sandboxOptions);
@@ -790,11 +593,11 @@ private async handleStartSandboxWithOptions(socket: Socket, options: SocketEvent
     printer.log('Sandbox start command issued successfully', LogLevel.DEBUG);
     
   } catch (error) {
-    printer.log(`Error starting sandbox: ${error}`, LogLevel.ERROR);
+    printer.log(`Error starting sandbox: ${String(error)}`, LogLevel.ERROR);
     socket.emit('sandboxStatus', { 
       status: 'error',
       identifier: options.identifier || this.backendId.name,
-      error: `${error}`
+      error: `${String(error)}`
     });
   }
 }
@@ -823,11 +626,11 @@ private async handleStopSandbox(socket: Socket): Promise<void> {
     
     printer.log('Sandbox stopped successfully', LogLevel.INFO);
   } catch (error) {
-    printer.log(`Error stopping sandbox: ${error}`, LogLevel.ERROR);
+    printer.log(`Error stopping sandbox: ${String(error)}`, LogLevel.ERROR);
     socket.emit('sandboxStatus', { 
       status: 'error',
       identifier: this.backendId.name,
-      error: `${error}`
+      error: `${String(error)}`
     });
   }
 }
@@ -850,11 +653,11 @@ private async handleDeleteSandbox(socket: Socket): Promise<void> {
     
     printer.log('Sandbox delete command issued successfully', LogLevel.DEBUG);
   } catch (error) {
-    printer.log(`Error deleting sandbox: ${error}`, LogLevel.ERROR);
+    printer.log(`Error deleting sandbox: ${String(error)}`, LogLevel.ERROR);
     socket.emit('sandboxStatus', { 
       status: 'error',
       identifier: this.backendId.name,
-      error: `${error}`
+      error: `${String(error)}`
     });
   }
 }
@@ -863,7 +666,7 @@ private async handleDeleteSandbox(socket: Socket): Promise<void> {
   /**
    * Handles the stopDevTools event
    */
-  private async handleStopDevTools(socket: Socket): Promise<void> {
+  private async handleStopDevTools(): Promise<void> {
     await this.shutdownService.shutdown('user request', true);
   }
 

@@ -10,8 +10,7 @@ import { useState, useEffect } from 'react';
 
 interface HeaderProps {
   connected: boolean;
-  // onClear: () => void;
-  sandboxStatus: 'running' | 'stopped' | 'nonexistent' | 'unknown' | 'deploying';
+  sandboxStatus: 'running' | 'stopped' | 'nonexistent' | 'unknown' | 'deploying' | 'deleting';
   sandboxIdentifier?: string;
   onStartSandbox: () => void;
   onStopSandbox: () => void;
@@ -91,6 +90,8 @@ const Header = ({
         return <StatusIndicator type="error">No Sandbox</StatusIndicator>;
       case 'deploying':
         return <StatusIndicator type="in-progress">{statusText}Deploying</StatusIndicator>;
+      case 'deleting':
+        return <StatusIndicator type="in-progress">{statusText}Deleting</StatusIndicator>;
       default:
         // Show different messages based on how long we've been checking
         if (statusCheckTimeout === 0) {

@@ -13,7 +13,7 @@ import {
 interface DeploymentProgressProps {
   socket: Socket | null;
   visible: boolean;
-  status: 'running' | 'stopped' | 'nonexistent' | 'unknown' | 'deploying';
+  status: 'running' | 'stopped' | 'nonexistent' | 'unknown' | 'deploying' | 'deleting';
 }
 
 interface ResourceStatus {

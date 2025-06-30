@@ -1,20 +1,26 @@
-import { describe, it, mock, beforeEach } from 'node:test';
+import { beforeEach, describe, it, mock } from 'node:test';
 import assert from 'node:assert';
 import { ResourceService } from './resource_service.js';
+import type { LocalStorageManager } from '../local_storage_manager.js';
 
 void describe('ResourceService', () => {
   let resourceService: ResourceService;
-  let mockStorageManager: any;
-  let mockBackendClient: any;
+  let mockStorageManager: LocalStorageManager;
+  let mockBackendClient: { getBackendMetadata: ReturnType<typeof mock.fn> };
+  let mockLoadResources: ReturnType<typeof mock.fn>;
+  let mockSaveResources: ReturnType<typeof mock.fn>;
   const mockBackendId = { name: 'test-backend' };
   
   beforeEach(() => {
     mock.reset();
     
+    mockLoadResources = mock.fn();
+    mockSaveResources = mock.fn();
+    
     mockStorageManager = {
-      loadResources: mock.fn(),
-      saveResources: mock.fn()
-    };
+      loadResources: mockLoadResources,
+      saveResources: mockSaveResources
+    } as unknown as LocalStorageManager;
     
     const getSandboxState = () => 'running';
     
@@ -22,17 +28,18 @@ void describe('ResourceService', () => {
     
     resourceService = new ResourceService(
       mockStorageManager,
-      mockBackendId,
-      getSandboxState
+      mockBackendId.name,
+      getSandboxState,
+      'amplify-backend' // Add namespace parameter
     );
     
-    (resourceService as any).backendClient = {
+    (resourceService as unknown as { backendClient: typeof mockBackendClient }).backendClient = {
       getBackendMetadata: mockGetBackendMetadata
     };
     
-    mockBackendClient = (resourceService as any).backendClient;
+    mockBackendClient = (resourceService as unknown as { backendClient: typeof mockBackendClient }).backendClient;
     
-    (resourceService as any).getRegion = () => 'us-east-1';
+    (resourceService as unknown as { getRegion: () => string }).getRegion = () => 'us-east-1';
   });
   
   void describe('getDeployedBackendResources', () => {
@@ -42,21 +49,18 @@ void describe('ResourceService', () => {
         resources: [{ logicalResourceId: 'resource1' }],
       };
       
-      mockStorageManager.loadResources.mock.mockImplementation(() => savedResources);
+      mockLoadResources.mock.mockImplementation(() => savedResources);
       
-      // Execute
       const result = await resourceService.getDeployedBackendResources();
       
-      // Verify
       assert.strictEqual(result.name, 'test-backend');
       assert.strictEqual(result.status, 'running');
       assert.strictEqual(result.resources[0].logicalResourceId, 'resource1');
-      assert.strictEqual(mockStorageManager.saveResources.mock.callCount(), 0);
+      assert.strictEqual(mockSaveResources.mock.callCount(), 0);
     });
     
     void it('fetches backend metadata when no saved resources exist', async () => {
-      // Setup
-      mockStorageManager.loadResources.mock.mockImplementation(() => null);
+      mockLoadResources.mock.mockImplementation(() => null);
       
       const mockResources = [
         {
@@ -80,11 +84,11 @@ void describe('ResourceService', () => {
       assert.strictEqual(result.name, 'test-backend');
       assert.strictEqual(result.resources.length, 1);
       assert.strictEqual(result.resources[0].friendlyName, 'MyStack/MyFunction/Resource');
-      assert.strictEqual(mockStorageManager.saveResources.mock.callCount(), 1);
+      assert.strictEqual(mockSaveResources.mock.callCount(), 1);
     });
     
     void it('handles deployment in progress error', async () => {
-      mockStorageManager.loadResources.mock.mockImplementation(() => null);
+      mockLoadResources.mock.mockImplementation(() => null);
       mockBackendClient.getBackendMetadata.mock.mockImplementation(() => {
         throw new Error('deployment is in progress');
       });
@@ -100,23 +104,20 @@ void describe('ResourceService', () => {
     });
     
     void it('handles non-existent stack error', async () => {
-      // Setup
-      mockStorageManager.loadResources.mock.mockImplementation(() => null);
+      mockLoadResources.mock.mockImplementation(() => null);
       mockBackendClient.getBackendMetadata.mock.mockImplementation(() => {
         throw new Error('does not exist');
       });
       
-      // Execute
       const result = await resourceService.getDeployedBackendResources();
       
-      // Verify
       assert.strictEqual(result.status, 'nonexistent');
       assert.strictEqual(result.resources.length, 0);
       assert.strictEqual(result.message, 'No sandbox exists. Please create a sandbox first.');
     });
     
     void it('throws error for unexpected errors', async () => {
-      mockStorageManager.loadResources.mock.mockImplementation(() => null);
+      mockLoadResources.mock.mockImplementation(() => null);
       mockBackendClient.getBackendMetadata.mock.mockImplementation(() => {
         throw new Error('unexpected error');
       });

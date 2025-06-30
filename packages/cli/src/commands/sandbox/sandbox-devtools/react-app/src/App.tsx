@@ -23,7 +23,7 @@ interface LogEntry {
 }
 
 interface SandboxStatusData {
-  status: 'running' | 'stopped' | 'nonexistent' | 'deploying';
+  status: 'running' | 'stopped' | 'nonexistent' | 'deploying' | 'deleting';
   error?: string;
   identifier?: string;
   stackStatus?: string;
@@ -37,7 +37,7 @@ function App() {
   const [connected, setConnected] = useState(false);
   const socketRef = useRef<Socket | null>(null);
   const [activeTabId, setActiveTabId] = useState('logs');
-  const [sandboxStatus, setSandboxStatus] = useState<'running' | 'stopped' | 'nonexistent' | 'unknown' | 'deploying'>('unknown');
+  const [sandboxStatus, setSandboxStatus] = useState<'running' | 'stopped' | 'nonexistent' | 'unknown' | 'deploying' | 'deleting'>('unknown');
   const [sandboxIdentifier, setSandboxIdentifier] = useState<string | undefined>(undefined);
   const [statusError, setStatusError] = useState<string | null>(null);
   const [showOptionsModal, setShowOptionsModal] = useState(false);
