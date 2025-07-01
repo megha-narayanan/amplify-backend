@@ -37,9 +37,6 @@ const ResourceLogPanel: React.FC<ResourceLogPanelProps> = ({
   const [isRecording, setIsRecording] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState<string>('');
-  const [recordingStartTime, setRecordingStartTime] = useState<string | null>(
-    null,
-  );
   const logContainerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -151,16 +148,8 @@ const ResourceLogPanel: React.FC<ResourceLogPanelProps> = ({
     }
   };
 
-  // Filter logs based on recording start time and search query
+  // Filter logs based on search query only
   const filteredLogs = logs.filter((log) => {
-    // Filter by recording start time if set
-    if (
-      recordingStartTime &&
-      new Date(log.timestamp) < new Date(recordingStartTime)
-    ) {
-      return false;
-    }
-
     // Filter by search query
     return (
       searchQuery === '' ||
@@ -176,10 +165,6 @@ const ResourceLogPanel: React.FC<ResourceLogPanelProps> = ({
     if (isRecording) {
       // Save current logs before stopping
       socket.emit('getSavedResourceLogs', { resourceId });
-    } else {
-      // Clear existing logs and set start time when starting recording
-      setLogs([]);
-      setRecordingStartTime(new Date().toISOString());
     }
 
     socket.emit('toggleResourceLogging', {

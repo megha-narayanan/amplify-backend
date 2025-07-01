@@ -93,6 +93,8 @@ export class SocketHandlerService {
     private resourceService: ResourceService,
     // eslint-disable-next-line spellcheck/spell-checker
     private activeLogPollers = new Map<string, NodeJS.Timeout>(),
+    // Track when logging was toggled on for each resource
+    private toggleStartTimes = new Map<string, number>(),
   ) {}
 
   /**
@@ -222,6 +224,9 @@ export class SocketHandlerService {
             status: 'starting',
           });
 
+          // Store the current time as the toggle start time
+          this.toggleStartTimes.set(data.resourceId, Date.now());
+
           // Using polling-based logs directly
           printer.log(
             `Setting up polling-based logs for ${data.resourceId}`,
@@ -277,26 +282,36 @@ export class SocketHandlerService {
                   getLogsResponse.events &&
                   getLogsResponse.events.length > 0
                 ) {
-                  const logs = getLogsResponse.events.map((event) => ({
-                    timestamp: event.timestamp || Date.now(),
-                    message: event.message || '',
-                  }));
+                  // Get the toggle start time for this resource
+                  const toggleStartTime =
+                    this.toggleStartTimes.get(data.resourceId) || 0;
 
-                  // Save logs to local storage
-                  logs.forEach(
-                    (log: { timestamp: number; message: string }) => {
-                      this.storageManager.appendCloudWatchLog(
-                        data.resourceId,
-                        log,
-                      );
-                    },
-                  );
+                  // Filter logs based on toggle start time
+                  const logs = getLogsResponse.events
+                    .filter((event) => (event.timestamp || 0) > toggleStartTime)
+                    .map((event) => ({
+                      timestamp: event.timestamp || Date.now(),
+                      message: event.message || '',
+                    }));
 
-                  // Emit logs to all clients
-                  this.io.emit('resourceLogs', {
-                    resourceId: data.resourceId,
-                    logs,
-                  });
+                  // Only save and emit if we have logs after filtering
+                  if (logs.length > 0) {
+                    // Save logs to local storage
+                    logs.forEach(
+                      (log: { timestamp: number; message: string }) => {
+                        this.storageManager.appendCloudWatchLog(
+                          data.resourceId,
+                          log,
+                        );
+                      },
+                    );
+
+                    // Emit logs to all clients
+                    this.io.emit('resourceLogs', {
+                      resourceId: data.resourceId,
+                      logs,
+                    });
+                  }
                 }
               } catch (error) {
                 printer.log(
@@ -734,13 +749,7 @@ export class SocketHandlerService {
    */
   private handleGetSavedResources(socket: Socket): void {
     const resources = this.storageManager.loadResources();
-    if (resources) {
-      socket.emit('savedResources', resources);
-    } else {
-      socket.emit('error', {
-        message: 'No saved resources found',
-      });
-    }
+    socket.emit('savedResources', resources || []);
   }
 
   /**

@@ -716,7 +716,7 @@ void describe('Sandbox using local project name resolver', () => {
     assert.strictEqual(mockEmit.mock.callCount(), 4);
     assert.strictEqual(mockEmit.mock.calls[1].arguments[0], 'failedDeployment');
     assert.strictEqual(
-      mockEmit.mock.calls[2].arguments[0],
+      mockEmit.mock.calls[3].arguments[0],
       'successfulDeployment',
     );
 

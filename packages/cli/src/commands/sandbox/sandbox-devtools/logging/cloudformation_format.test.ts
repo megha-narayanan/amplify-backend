@@ -82,9 +82,12 @@ void describe('cleanAnsiCodes function', () => {
 
 void describe('isDeploymentProgressMessage function', () => {
   void it('identifies CloudFormation status messages', () => {
-    assert.strictEqual(isDeploymentProgressMessage('CREATE_IN_PROGRESS'), true);
-    assert.strictEqual(isDeploymentProgressMessage('UPDATE_COMPLETE'), true);
-    assert.strictEqual(isDeploymentProgressMessage('DELETE_FAILED'), true);
+    assert.strictEqual(
+      isDeploymentProgressMessage(' | CREATE_IN_PROGRESS'),
+      true,
+    );
+    assert.strictEqual(isDeploymentProgressMessage(' | UPDATE_COMPLETE'), true);
+    assert.strictEqual(isDeploymentProgressMessage(' | DELETE_FAILED'), true);
   });
 
   void it('identifies deployment progress messages', () => {
@@ -112,7 +115,7 @@ void describe('isDeploymentProgressMessage function', () => {
   });
 
   void it('handles messages with ANSI color codes', () => {
-    const coloredMessage = '\u001b[32mCREATE_COMPLETE\u001b[0m';
+    const coloredMessage = '\u001b[32m | CREATE_COMPLETE\u001b[0m';
     assert.strictEqual(isDeploymentProgressMessage(coloredMessage), true);
   });
 });
