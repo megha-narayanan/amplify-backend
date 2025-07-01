@@ -6,7 +6,10 @@ import { LogLevel, printer } from '@aws-amplify/cli-core';
  * @param resourceId The resource ID
  * @returns The log group name or null if the resource type is not supported
  */
-export const getLogGroupName = (resourceType: string, resourceId: string): string | null => {
+export const getLogGroupName = (
+  resourceType: string,
+  resourceId: string,
+): string | null => {
   switch (resourceType) {
     case 'AWS::Lambda::Function':
       return `/aws/lambda/${resourceId}`;
@@ -16,7 +19,10 @@ export const getLogGroupName = (resourceType: string, resourceId: string): strin
       // eslint-disable-next-line spellcheck/spell-checker
       return `/aws/appsync/apis/${resourceId}`;
     default:
-      printer.log(`Unsupported resource type for logs: ${resourceType}`, LogLevel.WARN);
+      printer.log(
+        `Unsupported resource type for logs: ${resourceType}`,
+        LogLevel.WARN,
+      );
       return null;
   }
 };

@@ -75,8 +75,12 @@ export class FileWatchingSandbox extends EventEmitter implements Sandbox {
   private watcherSubscription: Awaited<ReturnType<typeof _subscribe>>;
   private outputFilesExcludedFromWatch = ['.amplify'];
   private filesChangesTracker: FilesChangesTracker;
-  private state: 'running' | 'stopped' | 'deploying' | 'nonexistent' = 'stopped';
-  
+  private state:
+    | 'running'
+    | 'stopped'
+    | 'deploying'
+    | 'nonexistent'
+    | 'unknown' = 'unknown';
 
   /**
    * Creates a watcher process for this instance
@@ -96,11 +100,16 @@ export class FileWatchingSandbox extends EventEmitter implements Sandbox {
     this.interceptStderr();
   }
 
-    /**
-     * Gets the current state of the sandbox
-     * @returns The current state: 'running', 'stopped', 'deploying', or 'nonexistent'
-     */
-  getState = (): 'running' | 'stopped' | 'deploying' | 'nonexistent' => {
+  /**
+   * Gets the current state of the sandbox
+   * @returns The current state: 'running', 'stopped', 'deploying', 'nonexistent', or 'unknown'
+   */
+  getState = ():
+    | 'running'
+    | 'stopped'
+    | 'deploying'
+    | 'nonexistent'
+    | 'unknown' => {
     return this.state;
   };
 
@@ -135,7 +144,7 @@ export class FileWatchingSandbox extends EventEmitter implements Sandbox {
           'Make sure you are running this command from your project root directory.',
       });
     }
-    
+
     // Set state to running at the beginning of start
     this.state = 'running';
 
@@ -273,27 +282,36 @@ export class FileWatchingSandbox extends EventEmitter implements Sandbox {
    */
   stop = async () => {
     this.printer.log(`[Sandbox] Stop operation initiated`, LogLevel.DEBUG);
-    
-    
-    // Stop function log streaming
+
     try {
+      // Stop function log streaming
       this.functionsLogStreamer?.stopStreamingLogs();
-      this.printer.log(`[Sandbox] Function log streaming stopped successfully`, LogLevel.DEBUG);
-    } catch (error) {
-      this.printer.log(`[Sandbox] Error stopping function log streaming: ${String(error)}`, LogLevel.ERROR);
-    }
-    
-    // Unsubscribe from watcher
-    if (this.watcherSubscription) {
-      try {
+      this.printer.log(
+        `[Sandbox] Function log streaming stopped successfully`,
+        LogLevel.DEBUG,
+      );
+
+      // Unsubscribe from watcher
+      if (this.watcherSubscription) {
         await this.watcherSubscription.unsubscribe();
-      } catch (error) {
-        this.printer.log(`[Sandbox] Error unsubscribing from watcher: ${String(error)}`, LogLevel.ERROR);
       }
+
+      // Update state to stopped
+      this.state = 'stopped';
+      this.printer.log(`[Sandbox] Stop operation completed`, LogLevel.DEBUG);
+
+      // Emit successful stop event
+      this.emit('successfulStop');
+    } catch (error) {
+      this.printer.log(
+        `[Sandbox] Error during stop operation: ${String(error)}`,
+        LogLevel.ERROR,
+      );
+
+      // Emit failed stop event
+      this.emit('failedStop', error);
+      throw error;
     }
-    // Update state to stopped
-    this.state = 'stopped';
-    this.printer.log(`[Sandbox] Stop operation completed`, LogLevel.DEBUG);
   };
 
   /**
@@ -303,26 +321,41 @@ export class FileWatchingSandbox extends EventEmitter implements Sandbox {
     this.printer.log(
       '[Sandbox] Deleting all the resources in the sandbox environment...',
     );
-    
+
+    // Emit deletionStarted event with relevant info
+    this.emit('deletionStarted', {
+      identifier: options.identifier,
+      timestamp: new Date().toISOString(),
+    });
+
     try {
       const backendId = await this.backendIdSandboxResolver(options.identifier);
-      
+
       await this.executor.destroy(backendId);
-      
+
       // Update state to nonexistent
       this.state = 'nonexistent';
-      
+
       this.emit('successfulDeletion');
       this.printer.log('[Sandbox] Finished deleting.');
     } catch (error) {
-      this.printer.log(`[Sandbox] Error during deletion: ${String(error)}`, LogLevel.ERROR);
+      this.printer.log(
+        `[Sandbox] Error during deletion: ${String(error)}`,
+        LogLevel.ERROR,
+      );
       if (error instanceof Error && error.stack) {
-        this.printer.log(`[Sandbox] Error stack: ${error.stack}`, LogLevel.DEBUG);
+        this.printer.log(
+          `[Sandbox] Error stack: ${error.stack}`,
+          LogLevel.DEBUG,
+        );
       }
+
+      // Emit failedDeletion event
+      this.emit('failedDeletion', error);
+
       throw error;
     }
   };
-
 
   private shouldValidateAppSources = (): boolean => {
     const snapshot = this.filesChangesTracker.getAndResetSnapshot();
@@ -343,7 +376,13 @@ export class FileWatchingSandbox extends EventEmitter implements Sandbox {
       try {
         // Set state to deploying
         this.state = 'deploying';
-        
+
+        // Emit deploymentStarted event with relevant info
+        this.emit('deploymentStarted', {
+          identifier: options.identifier,
+          timestamp: new Date().toISOString(),
+        });
+
         const deployResult = await this.executor.deploy(
           await this.backendIdSandboxResolver(options.identifier),
           this.shouldValidateAppSources,
@@ -369,7 +408,7 @@ export class FileWatchingSandbox extends EventEmitter implements Sandbox {
         span.end();
 
         this.printer.log('[Sandbox] Deployment successful', LogLevel.DEBUG);
-        
+
         // Set state based on watchForChanges option
         if (options.watchForChanges === false) {
           // If --once flag was used, set state to stopped

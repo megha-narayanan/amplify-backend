@@ -112,7 +112,7 @@ export class SandboxCommand
       sandboxIdentifier: this.sandboxIdentifier,
       clientConfigLifecycleHandler,
     });
-    
+
     if (eventHandlers) {
       Object.entries(eventHandlers).forEach(([event, handlers]) => {
         handlers.forEach((handler) => sandbox.on(event, handler));
@@ -155,11 +155,20 @@ export class SandboxCommand
     }
     printer.log('Starting sandbox with options:', LogLevel.DEBUG);
     printer.log(`- dir: ${args.dirToWatch || 'undefined'}`, LogLevel.DEBUG);
-    printer.log(`- exclude: ${JSON.stringify(watchExclusions)}`, LogLevel.DEBUG);
-    printer.log(`- identifier: ${args.identifier || 'undefined'}`, LogLevel.DEBUG);
+    printer.log(
+      `- exclude: ${JSON.stringify(watchExclusions)}`,
+      LogLevel.DEBUG,
+    );
+    printer.log(
+      `- identifier: ${args.identifier || 'undefined'}`,
+      LogLevel.DEBUG,
+    );
     printer.log(`- watchForChanges: ${!args.once}`, LogLevel.DEBUG);
-    printer.log(`- functionStreamingOptions: ${JSON.stringify(functionStreamingOptions)}`, LogLevel.DEBUG);
-    
+    printer.log(
+      `- functionStreamingOptions: ${JSON.stringify(functionStreamingOptions)}`,
+      LogLevel.DEBUG,
+    );
+
     // Check if DevTools is running (asks user to start sandbox in Devtools, so Devtools can manage the sandbox)
     const portChecker = new PortChecker();
     const DEVTOOLS_PORT = 3333;
@@ -167,18 +176,20 @@ export class SandboxCommand
     if (devToolsRunning) {
       printer.log('DevTools is currently running', LogLevel.ERROR);
       throw new AmplifyUserError('DevToolsRunningError', {
-        message: 'DevTools is currently running. Please start the sandbox through DevTools instead.',
-        resolution: 'Open DevTools in your browser and use the "Start Sandbox" button to start the sandbox.',
+        message:
+          'DevTools is currently running. Please start the sandbox through DevTools instead.',
+        resolution:
+          'Open DevTools in your browser and use the "Start Sandbox" button to start the sandbox.',
       });
     }
-      await sandbox.start({
-        dir: args.dirToWatch,
-        exclude: watchExclusions,
-        identifier: args.identifier,
-        watchForChanges: !args.once,
-        functionStreamingOptions,
-      });
-    
+    await sandbox.start({
+      dir: args.dirToWatch,
+      exclude: watchExclusions,
+      identifier: args.identifier,
+      watchForChanges: !args.once,
+      functionStreamingOptions,
+    });
+
     process.once('SIGINT', () => {
       void this.sigIntHandler();
     });

@@ -6,7 +6,7 @@ import {
   Button,
   FormField,
   Header,
-  Slider
+  Slider,
 } from '@cloudscape-design/components';
 
 interface LogSettingsModalProps {
@@ -22,15 +22,17 @@ export interface LogSettings {
   maxLogSizeMB: number;
 }
 
-const LogSettingsModal: React.FC<LogSettingsModalProps> = ({ 
-  visible, 
-  onDismiss, 
+const LogSettingsModal: React.FC<LogSettingsModalProps> = ({
+  visible,
+  onDismiss,
   onSave,
-  onClear, 
+  onClear,
   initialSettings,
-  currentSizeMB
+  currentSizeMB,
 }) => {
-  const [maxLogSizeMB, setMaxLogSizeMB] = useState<number>(initialSettings.maxLogSizeMB);
+  const [maxLogSizeMB, setMaxLogSizeMB] = useState<number>(
+    initialSettings.maxLogSizeMB,
+  );
 
   // Update state when initialSettings change
   useEffect(() => {
@@ -50,8 +52,12 @@ const LogSettingsModal: React.FC<LogSettingsModalProps> = ({
       footer={
         <Box float="right">
           <SpaceBetween direction="horizontal" size="xs">
-            <Button variant="link" onClick={onDismiss}>Cancel</Button>
-            <Button variant="primary" onClick={handleSave}>Save Settings</Button>
+            <Button variant="link" onClick={onDismiss}>
+              Cancel
+            </Button>
+            <Button variant="primary" onClick={handleSave}>
+              Save Settings
+            </Button>
           </SpaceBetween>
         </Box>
       }
@@ -62,9 +68,9 @@ const LogSettingsModal: React.FC<LogSettingsModalProps> = ({
             Current log size: <strong>{currentSizeMB.toFixed(2)} MB</strong>
           </Box>
         )}
-        
-        <FormField 
-          label={`Maximum Log Size (${maxLogSizeMB} MB)`} 
+
+        <FormField
+          label={`Maximum Log Size (${maxLogSizeMB} MB)`}
           description="Set the maximum size for all logs combined. Older logs will be removed when this limit is reached."
         >
           <Slider
@@ -75,7 +81,9 @@ const LogSettingsModal: React.FC<LogSettingsModalProps> = ({
             step={10}
           />
         </FormField>
-        <Button onClick={onClear} iconName="remove">Clear Logs</Button>
+        <Button onClick={onClear} iconName="remove">
+          Clear Logs
+        </Button>
       </SpaceBetween>
     </Modal>
   );

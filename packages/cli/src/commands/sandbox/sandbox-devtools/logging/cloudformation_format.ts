@@ -52,7 +52,6 @@ const normalizeCDKConstructPath = (constructPath: string): string => {
     .replace('/amplifyData/', '/');
 };
 
-
 /**
  * Extracts a friendly name from a nested stack logical ID
  * @param stackName The stack name to process
@@ -97,6 +96,35 @@ export const cleanAnsiCodes = (text: string): string => {
 };
 
 /**
+ * Check if a line matches CloudFormation event patterns
+ * @param cleanLine The cleaned line to check
+ * @returns True if the line matches any CloudFormation pattern
+ */
+const matchesCloudFormationPattern = (cleanLine: string): boolean => {
+  const originalMatch = /\s+[AP]M\s+\|\s+[A-Z_]+\s+\|\s+.+\s+\|\s+.+/.test(
+    cleanLine,
+  );
+  const actualMatch =
+    /\d+:\d+:\d+\s+[AP]M.*?\|\s*\d+\s*\|\s*\d+:\d+:\d+\s+[AP]M\s*\|\s*[A-Z_]+\s*\|\s*.*?\s*\|\s*.*/.test(
+      cleanLine,
+    );
+  const simpleMatch = /\|\s*[A-Z_]+\s*\|\s*AWS::[A-Za-z0-9:]+/.test(cleanLine);
+  const hasDeploymentKeywords =
+    cleanLine.includes('_IN_PROGRESS') ||
+    cleanLine.includes('CREATE_') ||
+    cleanLine.includes('DELETE_') ||
+    cleanLine.includes('UPDATE_') ||
+    cleanLine.includes('COMPLETE') ||
+    cleanLine.includes('FAILED');
+  return (
+    originalMatch ||
+    actualMatch ||
+    simpleMatch ||
+    (hasDeploymentKeywords && cleanLine.includes('|'))
+  );
+};
+
+/**
  * Check if a message is a deployment progress message
  * @param message The message to check
  * @returns True if the message is a deployment progress message
@@ -104,17 +132,8 @@ export const cleanAnsiCodes = (text: string): string => {
 export const isDeploymentProgressMessage = (message: string): boolean => {
   const cleanedMessage = cleanAnsiCodes(message);
   return (
-    cleanedMessage.includes('_IN_PROGRESS') ||
-    cleanedMessage.includes('CREATE_') ||
-    cleanedMessage.includes('DELETE_') ||
-    cleanedMessage.includes('UPDATE_') ||
-    cleanedMessage.includes('Deployment in progress') ||
-    cleanedMessage.includes('COMPLETE') ||
-    cleanedMessage.includes('FAILED') ||
-    // Match CloudFormation resource status patterns
-    /\d+:\d+:\d+\s+[AP]M\s+\|\s+[A-Z_]+\s+\|\s+.+\s+\|\s+.+/.test(
-      cleanedMessage,
-    )
+    matchesCloudFormationPattern(cleanedMessage) ||
+    cleanedMessage.includes('Deployment in progress')
   );
 };
 
@@ -126,12 +145,56 @@ export const isDeploymentProgressMessage = (message: string): boolean => {
 export const extractCloudFormationEvents = (message: string): string[] => {
   const events: string[] = [];
   const lines = message.split('\n');
-  
+
   for (const line of lines) {
-    // Match CloudFormation resource status patterns
-    if (/\s+[AP]M\s+\|\s+[A-Z_]+\s+\|\s+.+\s+\|\s+.+/.test(line)) {
+    const cleanLine = cleanAnsiCodes(line);
+    if (matchesCloudFormationPattern(cleanLine)) {
       events.push(line);
     }
   }
+
   return events;
+};
+
+/**
+ * Type for parsed CloudFormation resource status
+ */
+export type ResourceStatus = {
+  resourceType: string;
+  resourceName: string;
+  status: string;
+  timestamp: string;
+  key: string;
+};
+
+/**
+ * Parse a deployment message to extract structured information
+ * @param message The message to parse
+ * @returns A ResourceStatus object or null if the message doesn't match the expected format
+ */
+export const parseDeploymentMessage = (
+  message: string,
+): ResourceStatus | null => {
+  const cfnMatch = message.match(
+    /(\d+:\d+:\d+\s+[AP]M)\s+\|\s+([A-Z_]+)\s+\|\s+([^|]+)\s+\|\s+(.+)/,
+  );
+  if (cfnMatch) {
+    const timestamp = cfnMatch[1].trim();
+    const status = cfnMatch[2].trim();
+    const resourceType = cfnMatch[3].trim();
+    const resourceName = cfnMatch[4].trim();
+
+    // Create a unique key for this resource
+    const key = `${resourceType}:${resourceName}`;
+
+    return {
+      resourceType,
+      resourceName,
+      status,
+      timestamp,
+      key,
+    };
+  }
+
+  return null;
 };

@@ -11,14 +11,16 @@ void describe('SandboxDevToolsCommand', () => {
 
   beforeEach(() => {
     mock.reset();
-    
+
     // Mock printer methods
     mock.method(printer, 'print', () => {});
     mock.method(printer, 'log', () => {});
     mock.method(format, 'highlight', (text: string) => text);
 
     // Mock PortChecker to prevent actual port operations
-    mock.method(PortChecker.prototype, 'findAvailablePort', () => Promise.resolve(3333));
+    mock.method(PortChecker.prototype, 'findAvailablePort', () =>
+      Promise.resolve(3333),
+    );
 
     command = new SandboxDevToolsCommand();
     originalHandler = command.handler;
@@ -33,14 +35,17 @@ void describe('SandboxDevToolsCommand', () => {
   void describe('constructor', () => {
     void it('initializes with correct command and description', () => {
       assert.strictEqual(command.command, 'devtools');
-      assert.strictEqual(command.describe, 'Starts a development console for Amplify sandbox');
+      assert.strictEqual(
+        command.describe,
+        'Starts a development console for Amplify sandbox',
+      );
     });
   });
 
   void describe('handler', () => {
     void it('prints server start message', async (contextual) => {
       const printMock = contextual.mock.method(printer, 'print');
-      
+
       // Mock the handler to avoid full execution
       command.handler = async () => {
         printer.print('DevTools server started at http://localhost:3333');
@@ -49,22 +54,28 @@ void describe('SandboxDevToolsCommand', () => {
       await command.handler();
 
       assert.strictEqual(printMock.mock.callCount(), 1);
-      assert.match(printMock.mock.calls[0].arguments[0], /DevTools server started at/);
+      assert.match(
+        printMock.mock.calls[0].arguments[0],
+        /DevTools server started at/,
+      );
     });
 
     void it('uses correct port when available', async (contextual) => {
-      const portCheckerMock = contextual.mock.method(PortChecker.prototype, 'findAvailablePort', 
-        () => Promise.resolve(4444));
-      
+      const portCheckerMock = contextual.mock.method(
+        PortChecker.prototype,
+        'findAvailablePort',
+        () => Promise.resolve(4444),
+      );
+
       const printMock = contextual.mock.method(printer, 'print');
-      
+
       // Create a mock server object
       const mockServer = {
         listen: mock.fn(),
         close: mock.fn(),
         on: mock.fn(),
       } as unknown as Server;
-      
+
       // Simplified handler test
       command.handler = async () => {
         const portChecker = new PortChecker();
@@ -99,7 +110,7 @@ void describe('SandboxDevToolsCommand', () => {
         (error: Error) => {
           assert.strictEqual(error.message, 'No available ports');
           return true;
-        }
+        },
       );
     });
   });

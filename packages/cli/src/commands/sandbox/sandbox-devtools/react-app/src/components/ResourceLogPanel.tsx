@@ -8,7 +8,7 @@ import {
   Input,
   FormField,
   Header,
-  Container
+  Container,
 } from '@cloudscape-design/components';
 
 interface LogEntry {
@@ -25,36 +25,44 @@ interface ResourceLogPanelProps {
   deploymentInProgress?: boolean;
 }
 
-const ResourceLogPanel: React.FC<ResourceLogPanelProps> = ({ 
-  resourceId, 
-  resourceName, 
+const ResourceLogPanel: React.FC<ResourceLogPanelProps> = ({
+  resourceId,
+  resourceName,
   resourceType,
   onClose,
   socket,
-  deploymentInProgress
+  deploymentInProgress,
 }) => {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [isRecording, setIsRecording] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState<string>('');
+  const [recordingStartTime, setRecordingStartTime] = useState<string | null>(
+    null,
+  );
   const logContainerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!socket) return;
-    
+
     // Request saved logs when panel opens
     socket.emit('viewResourceLogs', { resourceId });
-    
+
     // Set up a periodic refresh for logs when viewing
     const refreshInterval = setInterval(() => {
       socket.emit('getSavedResourceLogs', { resourceId });
     }, 2000); // Refresh every 2 seconds to match server-side polling
-    
+
     socket.emit('getActiveLogStreams');
 
-    const handleLogStreamStatus = (data: { resourceId: string; status: string; }) => {
+    const handleLogStreamStatus = (data: {
+      resourceId: string;
+      status: string;
+    }) => {
       if (data.resourceId === resourceId) {
-        setIsRecording(data.status === 'active' || data.status === 'already-active');
+        setIsRecording(
+          data.status === 'active' || data.status === 'already-active',
+        );
       }
     };
 
@@ -65,15 +73,21 @@ const ResourceLogPanel: React.FC<ResourceLogPanelProps> = ({
     };
 
     // Listen for log entries
-    const handleResourceLogs = (data: { resourceId: string; logs: LogEntry[]; }) => {
+    const handleResourceLogs = (data: {
+      resourceId: string;
+      logs: LogEntry[];
+    }) => {
       if (data.resourceId === resourceId) {
         // Add new logs to the existing logs
-        setLogs(prevLogs => [...prevLogs, ...data.logs]);
+        setLogs((prevLogs) => [...prevLogs, ...data.logs]);
       }
     };
 
     // Listen for saved logs
-    const handleSavedResourceLogs = (data: { resourceId: string; logs: LogEntry[]; }) => {
+    const handleSavedResourceLogs = (data: {
+      resourceId: string;
+      logs: LogEntry[];
+    }) => {
       if (data.resourceId === resourceId) {
         // Set logs from saved logs, but preserve existing logs if we already have them
         // This prevents logs from disappearing when stopping recording
@@ -84,7 +98,10 @@ const ResourceLogPanel: React.FC<ResourceLogPanelProps> = ({
     };
 
     // Listen for errors
-    const handleLogStreamError = (data: { resourceId: string; error: string; }) => {
+    const handleLogStreamError = (data: {
+      resourceId: string;
+      error: string;
+    }) => {
       if (data.resourceId === resourceId) {
         setError(data.error);
       }
@@ -103,7 +120,7 @@ const ResourceLogPanel: React.FC<ResourceLogPanelProps> = ({
       socket.off('resourceLogs', handleResourceLogs);
       socket.off('savedResourceLogs', handleSavedResourceLogs);
       socket.off('logStreamError', handleLogStreamError);
-      
+
       // Clear the refresh interval
       clearInterval(refreshInterval);
     };
@@ -115,7 +132,7 @@ const ResourceLogPanel: React.FC<ResourceLogPanelProps> = ({
       logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
     }
   }, [logs]);
-  
+
   // Preserve logs when stopping recording
   useEffect(() => {
     if (!isRecording && logs.length > 0) {
@@ -134,27 +151,43 @@ const ResourceLogPanel: React.FC<ResourceLogPanelProps> = ({
     }
   };
 
-  // Filter logs based on search query
-  const filteredLogs = logs.filter(log => 
-    searchQuery === '' || 
-    log.message.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    formatTimestamp(log.timestamp).toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  // Filter logs based on recording start time and search query
+  const filteredLogs = logs.filter((log) => {
+    // Filter by recording start time if set
+    if (
+      recordingStartTime &&
+      new Date(log.timestamp) < new Date(recordingStartTime)
+    ) {
+      return false;
+    }
+
+    // Filter by search query
+    return (
+      searchQuery === '' ||
+      log.message.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      formatTimestamp(log.timestamp)
+        .toLowerCase()
+        .includes(searchQuery.toLowerCase())
+    );
+  });
   const toggleRecording = () => {
     if (!socket) return;
-    
-    // If we're stopping recording, first request to save the current logs
+
     if (isRecording) {
       // Save current logs before stopping
       socket.emit('getSavedResourceLogs', { resourceId });
+    } else {
+      // Clear existing logs and set start time when starting recording
+      setLogs([]);
+      setRecordingStartTime(new Date().toISOString());
     }
-    
+
     socket.emit('toggleResourceLogging', {
       resourceId,
       resourceType,
-      startLogging: !isRecording
+      startLogging: !isRecording,
     });
-    
+
     // After toggling, request updated active log streams to ensure all components are in sync
     setTimeout(() => {
       socket.emit('getActiveLogStreams');
@@ -168,13 +201,13 @@ const ResourceLogPanel: React.FC<ResourceLogPanelProps> = ({
           variant="h2"
           actions={
             <SpaceBetween direction="horizontal" size="xs">
-              <Button 
-                onClick={toggleRecording} 
-                variant={isRecording ? "normal" : "primary"}
+              <Button
+                onClick={toggleRecording}
+                variant={isRecording ? 'normal' : 'primary'}
                 disabled={!!deploymentInProgress}
               >
-                {isRecording ? "Stop Recording" : "Start Recording"}
-                {deploymentInProgress && " (disabled during deployment)"}
+                {isRecording ? 'Stop Recording' : 'Start Recording'}
+                {deploymentInProgress && ' (disabled during deployment)'}
               </Button>
               <Button onClick={onClose} variant="link">
                 Close
@@ -197,7 +230,7 @@ const ResourceLogPanel: React.FC<ResourceLogPanelProps> = ({
         {error && (
           <StatusIndicator type="error">Error: {error}</StatusIndicator>
         )}
-        
+
         <FormField label="Search logs">
           <Input
             value={searchQuery}
@@ -205,11 +238,12 @@ const ResourceLogPanel: React.FC<ResourceLogPanelProps> = ({
             placeholder="Search in logs..."
           />
         </FormField>
-        
+
         <div
           ref={logContainerRef}
           style={{
-            flex: 1,
+            height: '650px',
+            maxHeight: '650px',
             overflowY: 'auto',
             fontFamily: 'monospace',
             whiteSpace: 'pre-wrap',
@@ -218,7 +252,7 @@ const ResourceLogPanel: React.FC<ResourceLogPanelProps> = ({
             color: '#fff',
             padding: '10px',
             borderRadius: '4px',
-            minHeight: '300px'
+            display: 'block',
           }}
         >
           {filteredLogs.length === 0 ? (
@@ -230,14 +264,20 @@ const ResourceLogPanel: React.FC<ResourceLogPanelProps> = ({
           ) : (
             filteredLogs.map((log, index) => (
               <div key={index}>
-                <span style={{ color: '#888' }}>[{formatTimestamp(log.timestamp)}]</span> {log.message}
+                <span style={{ color: '#888' }}>
+                  [{formatTimestamp(log.timestamp)}]
+                </span>{' '}
+                {log.message}
               </div>
             ))
           )}
         </div>
-        
+
         <TextContent>
-          <p>{filteredLogs.length} log entries {searchQuery && `(filtered from ${logs.length})`}</p>
+          <p>
+            {filteredLogs.length} log entries{' '}
+            {searchQuery && `(filtered from ${logs.length})`}
+          </p>
         </TextContent>
       </SpaceBetween>
     </Container>

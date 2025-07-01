@@ -6,7 +6,7 @@ import {
   SpaceBetween,
   StatusIndicator,
   Modal,
-  TextContent
+  TextContent,
 } from '@cloudscape-design/components';
 
 interface LogEntry {
@@ -21,9 +21,16 @@ interface ResourceLogViewerProps {
   socket: Socket | null;
 }
 
-const ResourceLogViewer: React.FC<ResourceLogViewerProps> = ({ resourceId, resourceName, onClose, socket }) => {
+const ResourceLogViewer: React.FC<ResourceLogViewerProps> = ({
+  resourceId,
+  resourceName,
+  onClose,
+  socket,
+}) => {
   const [logs, setLogs] = useState<LogEntry[]>([]);
-  const [status, setStatus] = useState<'inactive' | 'starting' | 'active' | 'error'>('inactive');
+  const [status, setStatus] = useState<
+    'inactive' | 'starting' | 'active' | 'error'
+  >('inactive');
   const [error, setError] = useState<string | null>(null);
   const logContainerRef = useRef<HTMLDivElement>(null);
 
@@ -37,11 +44,17 @@ const ResourceLogViewer: React.FC<ResourceLogViewerProps> = ({ resourceId, resou
     socket.emit('startResourceLogs', { resourceId });
 
     // Listen for log stream status updates
-    const handleLogStreamStatus = (data: { resourceId: string; status: string; }) => {
+    const handleLogStreamStatus = (data: {
+      resourceId: string;
+      status: string;
+    }) => {
       if (data.resourceId === resourceId) {
         if (data.status === 'starting') {
           setStatus('starting');
-        } else if (data.status === 'active' || data.status === 'already-active') {
+        } else if (
+          data.status === 'active' ||
+          data.status === 'already-active'
+        ) {
           setStatus('active');
         } else if (data.status === 'stopped') {
           setStatus('inactive');
@@ -50,21 +63,30 @@ const ResourceLogViewer: React.FC<ResourceLogViewerProps> = ({ resourceId, resou
     };
 
     // Listen for log entries
-    const handleResourceLogs = (data: { resourceId: string; logs: LogEntry[]; }) => {
+    const handleResourceLogs = (data: {
+      resourceId: string;
+      logs: LogEntry[];
+    }) => {
       if (data.resourceId === resourceId) {
-        setLogs(prevLogs => [...prevLogs, ...data.logs]);
+        setLogs((prevLogs) => [...prevLogs, ...data.logs]);
       }
     };
 
     // Listen for saved logs
-    const handleSavedResourceLogs = (data: { resourceId: string; logs: LogEntry[]; }) => {
+    const handleSavedResourceLogs = (data: {
+      resourceId: string;
+      logs: LogEntry[];
+    }) => {
       if (data.resourceId === resourceId) {
         setLogs(data.logs);
       }
     };
 
     // Listen for errors
-    const handleLogStreamError = (data: { resourceId: string; error: string; }) => {
+    const handleLogStreamError = (data: {
+      resourceId: string;
+      error: string;
+    }) => {
       if (data.resourceId === resourceId) {
         setStatus('error');
         setError(data.error);
@@ -82,7 +104,7 @@ const ResourceLogViewer: React.FC<ResourceLogViewerProps> = ({ resourceId, resou
       socket.off('resourceLogs', handleResourceLogs);
       socket.off('savedResourceLogs', handleSavedResourceLogs);
       socket.off('logStreamError', handleLogStreamError);
-      
+
       // Stop log streaming when component unmounts
       socket.emit('stopResourceLogs', { resourceId });
     };
@@ -108,13 +130,13 @@ const ResourceLogViewer: React.FC<ResourceLogViewerProps> = ({ resourceId, resou
     <Modal
       visible={true}
       onDismiss={onClose}
-      header={resourceName + " Logs"}
+      header={resourceName + ' Logs'}
       size="large"
       footer={
         <Box float="right">
           <SpaceBetween direction="horizontal" size="xs">
-            <Button 
-              variant="primary" 
+            <Button
+              variant="primary"
               onClick={() => {
                 if (socket) socket.emit('stopResourceLogs', { resourceId });
                 onClose();
@@ -136,7 +158,7 @@ const ResourceLogViewer: React.FC<ResourceLogViewerProps> = ({ resourceId, resou
         {status === 'error' && (
           <StatusIndicator type="error">Error: {error}</StatusIndicator>
         )}
-        
+
         <div
           ref={logContainerRef}
           style={{
@@ -148,7 +170,7 @@ const ResourceLogViewer: React.FC<ResourceLogViewerProps> = ({ resourceId, resou
             backgroundColor: '#000',
             color: '#fff',
             padding: '10px',
-            borderRadius: '4px'
+            borderRadius: '4px',
           }}
         >
           {logs.length === 0 ? (
@@ -158,12 +180,15 @@ const ResourceLogViewer: React.FC<ResourceLogViewerProps> = ({ resourceId, resou
           ) : (
             logs.map((log, index) => (
               <div key={index}>
-                <span style={{ color: '#888' }}>[{formatTimestamp(log.timestamp)}]</span> {log.message}
+                <span style={{ color: '#888' }}>
+                  [{formatTimestamp(log.timestamp)}]
+                </span>{' '}
+                {log.message}
               </div>
             ))
           )}
         </div>
-        
+
         <TextContent>
           <p>{logs.length} log entries</p>
         </TextContent>

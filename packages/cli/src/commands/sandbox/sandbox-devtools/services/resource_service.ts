@@ -1,5 +1,8 @@
 import { LogLevel, printer } from '@aws-amplify/cli-core';
-import { DeployedBackendClient, DeployedBackendClientFactory } from '@aws-amplify/deployed-backend-client';
+import {
+  DeployedBackendClient,
+  DeployedBackendClientFactory,
+} from '@aws-amplify/deployed-backend-client';
 import { BackendIdentifier } from '@aws-amplify/plugin-types';
 import { S3Client } from '@aws-sdk/client-s3';
 import { AmplifyClient } from '@aws-sdk/client-amplify';
@@ -7,7 +10,11 @@ import { CloudFormationClient } from '@aws-sdk/client-cloudformation';
 import { LocalStorageManager } from '../local_storage_manager.js';
 import { createFriendlyName } from '../logging/cloudformation_format.js';
 
-import { ResourceWithFriendlyName, isCompleteResource } from '../resource_console_functions.js';
+import {
+  ResourceWithFriendlyName,
+  getAwsConsoleUrl,
+  isCompleteResource,
+} from '../resource_console_functions.js';
 
 /**
  * Type for deployed backend resources response
@@ -24,7 +31,7 @@ export type DeployedBackendResources = {
  * Service for managing backend resources
  */
 export class ResourceService {
-  private backendClient: DeployedBackendClient; 
+  private backendClient: DeployedBackendClient;
 
   /**
    * Creates a new ResourceService
@@ -32,8 +39,8 @@ export class ResourceService {
   constructor(
     private storageManager: LocalStorageManager,
     private backendName: string,
-    private getSandboxState: () => string,
-    private namespace: string = 'amplify-backend'  // Add namespace parameter with default
+    private getSandboxState: () => Promise<string>,
+    private namespace: string = 'amplify-backend', // Add namespace parameter with default
   ) {
     // Initialize the backend client
     this.backendClient = new DeployedBackendClientFactory().getInstance({
@@ -53,20 +60,20 @@ export class ResourceService {
       const savedResources = this.storageManager.loadResources();
       if (savedResources) {
         printer.log('Found saved resources, returning them', LogLevel.INFO);
-        const status = this.getSandboxState();
+        const status = await this.getSandboxState();
         return {
           ...savedResources,
-          status
+          status,
         } as DeployedBackendResources;
       }
-      
+
       try {
         printer.log('Fetching backend metadata...', LogLevel.DEBUG);
         // Create a BackendIdentifier object for the sandbox
         const backendId: BackendIdentifier = {
-          namespace: this.namespace,  // Use the provided namespace
+          namespace: this.namespace, // Use the provided namespace
           name: this.backendName,
-          type: 'sandbox'
+          type: 'sandbox',
         };
         const data = await this.backendClient.getBackendMetadata(backendId);
         printer.log('Successfully fetched backend metadata', LogLevel.DEBUG);
@@ -104,28 +111,42 @@ export class ResourceService {
           .filter(isCompleteResource)
           .map((resource) => {
             let resourceType = resource.resourceType;
-            
+
             // Remove CUSTOM:: prefix from resource type
             if (resourceType.startsWith('CUSTOM::')) {
               resourceType = resourceType.substring(8); // Remove "CUSTOM::" (8 characters)
             } else if (resourceType.startsWith('Custom::')) {
               resourceType = resourceType.substring(8); // Remove "Custom::" (8 characters)
             }
-            
+
             // Check if the resource has metadata with a construct path
             // Use a type guard to check if the resource has a metadata property
-            const metadata = 'metadata' in resource && 
-                            typeof resource.metadata === 'object' && 
-                            resource.metadata !== null && 
-                            'constructPath' in resource.metadata ? { 
-              constructPath: resource.metadata.constructPath as string
-            } : undefined;
-            
-            return {
+            const metadata =
+              'metadata' in resource &&
+              typeof resource.metadata === 'object' &&
+              resource.metadata !== null &&
+              'constructPath' in resource.metadata
+                ? {
+                    constructPath: resource.metadata.constructPath as string,
+                  }
+                : undefined;
+
+            const resourceWithFriendlyName = {
               ...resource,
               resourceType,
-              friendlyName: createFriendlyName(resource.logicalResourceId, metadata),
+              friendlyName: createFriendlyName(
+                resource.logicalResourceId,
+                metadata,
+              ),
             } as ResourceWithFriendlyName;
+
+            // Add console URL
+            resourceWithFriendlyName.consoleUrl = getAwsConsoleUrl(
+              resourceWithFriendlyName,
+              region,
+            );
+
+            return resourceWithFriendlyName;
           });
 
         // Add region and resources with friendly names to the data
@@ -134,7 +155,7 @@ export class ResourceService {
           region,
           resources: resourcesWithFriendlyNames,
         };
-        
+
         // Save resources to local storage for persistence
         this.storageManager.saveResources(enhancedData);
 
@@ -145,7 +166,7 @@ export class ResourceService {
           `Error getting backend resources: ${errorMessage}`,
           LogLevel.ERROR,
         );
-        
+
         // Check if this is a deployment in progress error
         if (errorMessage.includes('deployment is in progress')) {
           return {
@@ -153,7 +174,8 @@ export class ResourceService {
             status: 'deploying',
             resources: [],
             region: null,
-            message: 'Sandbox deployment is in progress. Resources will update when deployment completes.'
+            message:
+              'Sandbox deployment is in progress. Resources will update when deployment completes.',
           };
         } else if (errorMessage.includes('does not exist')) {
           // If the stack doesn't exist, return empty resources
@@ -162,11 +184,11 @@ export class ResourceService {
             status: 'nonexistent',
             resources: [],
             region: null,
-            message: 'No sandbox exists. Please create a sandbox first.'
+            message: 'No sandbox exists. Please create a sandbox first.',
           };
         }
-          // For other errors, throw the error
-          throw error;
+        // For other errors, throw the error
+        throw error;
       }
     } catch (error) {
       printer.log(

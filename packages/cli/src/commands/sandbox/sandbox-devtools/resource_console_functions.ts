@@ -11,23 +11,33 @@ import { DeployedBackendResource } from '@aws-amplify/deployed-backend-client';
  */
 export type ResourceWithFriendlyName = DeployedBackendResource & {
   logicalResourceId: string; // Make required
-  physicalResourceId: string; // Make required  
+  physicalResourceId: string; // Make required
   resourceType: string; // Make required
   resourceStatus: string; // Make required
   friendlyName?: string;
+  consoleUrl?: string | null; // Add console URL
 };
 
 /**
  * Type guard to ensure required fields exist in a resource
  */
 export const isCompleteResource = (
-  resource: DeployedBackendResource
-): resource is Required<Pick<DeployedBackendResource, 'logicalResourceId' | 'physicalResourceId' | 'resourceType' | 'resourceStatus'>> & DeployedBackendResource => {
+  resource: DeployedBackendResource,
+): resource is Required<
+  Pick<
+    DeployedBackendResource,
+    | 'logicalResourceId'
+    | 'physicalResourceId'
+    | 'resourceType'
+    | 'resourceStatus'
+  >
+> &
+  DeployedBackendResource => {
   return Boolean(
-    resource.logicalResourceId && 
-    resource.physicalResourceId && 
-    resource.resourceType && 
-    resource.resourceStatus
+    resource.logicalResourceId &&
+      resource.physicalResourceId &&
+      resource.resourceType &&
+      resource.resourceStatus,
   );
 };
 

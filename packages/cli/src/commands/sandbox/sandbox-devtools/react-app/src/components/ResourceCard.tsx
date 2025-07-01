@@ -6,7 +6,7 @@ import {
   SpaceBetween,
   Button,
   StatusIndicator,
-  Container
+  Container,
 } from '@cloudscape-design/components';
 import ResourceLogViewer from './ResourceLogViewer';
 
@@ -23,15 +23,17 @@ interface ResourceCardProps {
   socket: Socket | null;
 }
 
-const ResourceCard: React.FC<ResourceCardProps> = ({ 
+const ResourceCard: React.FC<ResourceCardProps> = ({
   resource,
   isLoggingActive,
   onToggleLogging,
-  socket
+  socket,
 }) => {
   const [showLogs, setShowLogs] = useState(false);
 
-  const getStatusType = (status: string): "success" | "info" | "warning" | "error" | "pending" => {
+  const getStatusType = (
+    status: string,
+  ): 'success' | 'info' | 'warning' | 'error' | 'pending' => {
     if (status.includes('COMPLETE')) return 'success';
     if (status.includes('PROGRESS')) return 'pending';
     if (status.includes('FAILED')) return 'error';
@@ -55,9 +57,7 @@ const ResourceCard: React.FC<ResourceCardProps> = ({
       header={
         <SpaceBetween direction="horizontal" size="xs">
           <div>{resource.friendlyName || resource.logicalResourceId}</div>
-          {isLoggingActive && (
-            <Badge color="green">Logging Active</Badge>
-          )}
+          {isLoggingActive && <Badge color="green">Logging Active</Badge>}
         </SpaceBetween>
       }
     >
@@ -68,25 +68,35 @@ const ResourceCard: React.FC<ResourceCardProps> = ({
           </StatusIndicator>
           <Badge>{getResourceTypeShort(resource.resourceType)}</Badge>
         </SpaceBetween>
-        
+
         <ExpandableSection headerText="Resource Details">
           <SpaceBetween direction="vertical" size="xs">
-            <div><strong>Logical ID:</strong> {resource.logicalResourceId}</div>
-            <div><strong>Physical ID:</strong> {resource.physicalResourceId}</div>
-            <div><strong>Type:</strong> {resource.resourceType}</div>
+            <div>
+              <strong>Logical ID:</strong> {resource.logicalResourceId}
+            </div>
+            <div>
+              <strong>Physical ID:</strong> {resource.physicalResourceId}
+            </div>
+            <div>
+              <strong>Type:</strong> {resource.resourceType}
+            </div>
           </SpaceBetween>
         </ExpandableSection>
-        
+
         {supportsLogs() && (
-          <Button 
+          <Button
             onClick={showLogs ? () => setShowLogs(false) : onToggleLogging}
           >
-            {showLogs ? "Hide Logs" : (isLoggingActive ? "Stop Logs" : "View Logs")}
+            {showLogs
+              ? 'Hide Logs'
+              : isLoggingActive
+                ? 'Stop Logs'
+                : 'View Logs'}
           </Button>
         )}
-        
+
         {showLogs && (
-          <ResourceLogViewer 
+          <ResourceLogViewer
             resourceId={resource.physicalResourceId}
             resourceName={resource.friendlyName || resource.logicalResourceId}
             onClose={() => setShowLogs(false)}

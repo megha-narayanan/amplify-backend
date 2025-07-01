@@ -20,22 +20,24 @@ export class ShutdownService {
     private readonly server: ReturnType<typeof createServer>,
     private readonly storageManager: LocalStorageManager,
     private readonly sandbox: import('@aws-amplify/sandbox').Sandbox,
-    private readonly getSandboxState: () => string
+    private readonly getSandboxState: () => Promise<string>,
   ) {}
-
 
   /**
    * Performs the shutdown process
    * @param reason The reason for shutting down (e.g., 'SIGINT', 'SIGTERM', 'user request')
    * @param exitProcess Whether to exit the process after shutdown
    */
-  public async shutdown(reason: string, exitProcess: boolean = false): Promise<void> {
+  public async shutdown(
+    reason: string,
+    exitProcess: boolean = false,
+  ): Promise<void> {
     printer.print(`\nStopping the devtools server (${String(reason)}).`);
-    
+
     // Check if sandbox is running and stop it
-    const status = this.getSandboxState();
+    const status = await this.getSandboxState();
     printer.log(`${reason} handler - checking sandbox status`, LogLevel.INFO);
-    
+
     if (status === 'running') {
       printer.log('Stopping sandbox before exiting...', LogLevel.INFO);
       try {
@@ -49,22 +51,21 @@ export class ShutdownService {
         }
       }
     }
-    
-    
+
     // Clear all stored resources when devtools ends
     this.storageManager.clearAll();
-    
+
     // Notify clients that the server is shutting down
     this.io.emit('log', {
       timestamp: new Date().toISOString(),
       level: 'INFO',
-      message: `DevTools server is shutting down (${String(reason)})...`
+      message: `DevTools server is shutting down (${String(reason)})...`,
     });
-    
+
     // Close socket and server connections
     await this.io.close();
     this.server.close();
-    
+
     // Exit the process if requested
     if (exitProcess) {
       // Short delay to allow messages to be sent
@@ -72,7 +73,7 @@ export class ShutdownService {
         void process.exit(0);
       }, 500);
     }
-    
+
     return Promise.resolve();
   }
 }
