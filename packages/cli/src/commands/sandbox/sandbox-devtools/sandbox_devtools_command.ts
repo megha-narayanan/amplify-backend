@@ -156,8 +156,6 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
 
     let sandboxState = 'unknown';
 
-    const recentDeploymentMessages = new Set<string>();
-
     // Function to determine the sandbox state and update related flags
     const getSandboxState = async () => {
       const previousState = sandboxState; // Store the previous state
@@ -203,8 +201,11 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
       } else {
         try {
           const state = sandbox.getState();
-
-          sandboxState = state;
+          // Only update if we get a definitive state, ignore 'unknown'
+          if (state !== 'unknown') {
+            sandboxState = state;
+          }
+          // If state is 'unknown', keep the current sandboxState
         } catch (error) {
           printer.log(
             `Error checking sandbox status: ${String(error)}`,
@@ -271,11 +272,61 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
     // Log the initial state for debugging
     printer.log(`Initial sandbox state: ${sandboxState}`, LogLevel.DEBUG);
 
-    // Store original printer method
-    const originalPrint = printer.print;
-
     // Flag to prevent duplicate processing of messages
     let processingMessage = false;
+    // Store original printer methods
+    const originalPrint = printer.print;
+    const originalLog = printer.log;
+    let currentLogLevel: LogLevel | null = null;
+
+    // Override printer.log to capture the log level
+    printer.log = function (message: string, level?: LogLevel) {
+      currentLogLevel = level ? level : LogLevel.DEBUG;
+      const result = originalLog.call(this, message, currentLogLevel);
+      currentLogLevel = null;
+      return result;
+    };
+
+    // Override printer.print (the lower-level method)
+    printer.print = function (message: string) {
+      // Call the original print method
+      originalPrint.call(this, message);
+      // Avoid double processing if this is called from printer.log
+      if (processingMessage) {
+        return;
+      }
+
+      processingMessage = true;
+
+      const cleanMessage = cleanAnsiCodes(message);
+
+      // Remove timestamp prefix if present (to avoid duplicate timestamps)
+      let finalMessage = cleanMessage;
+      const timeRegex = /^\d{1,2}:\d{2}:\d{2}\s+[AP]M\s+/;
+      if (timeRegex.test(finalMessage)) {
+        finalMessage = finalMessage.replace(timeRegex, '');
+      }
+
+      // Check if this is a deployment progress message
+      if (isDeploymentProgressMessage(cleanMessage)) {
+        handleDeploymentProgressMessage(cleanMessage);
+      } else {
+        // Skip DEBUG level messages from being sent to client
+        if (currentLogLevel === LogLevel.DEBUG) {
+          processingMessage = false;
+          return;
+        }
+        // Emit regular messages to client
+        const logData: LogEventData = {
+          timestamp: new Date().toISOString(),
+          level: LogLevel[currentLogLevel ? currentLogLevel : LogLevel.INFO],
+          message: finalMessage,
+        };
+        io.emit('log', logData);
+      }
+
+      processingMessage = false;
+    };
 
     // Function to handle deployment progress messages
     const handleDeploymentProgressMessage = (message: string) => {
@@ -288,24 +339,6 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
       if (cfnEvents.length > 0) {
         // Process each CloudFormation event
         cfnEvents.forEach((event) => {
-          // Create a unique key for this event to avoid duplicates
-          const eventKey = event.trim();
-
-          // Check if we've already sent this exact event recently
-          if (recentDeploymentMessages.has(eventKey)) {
-            return;
-          }
-
-          // Add to recent messages and limit size
-          recentDeploymentMessages.add(eventKey);
-          if (recentDeploymentMessages.size > 100) {
-            // Remove oldest message (first item in set)
-            const firstValue = recentDeploymentMessages.values().next().value;
-            if (firstValue !== undefined) {
-              recentDeploymentMessages.delete(firstValue);
-            }
-          }
-
           // Create event object
           const eventObj: DeploymentEventData = {
             message: event,
@@ -329,22 +362,6 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
       ) {
         // This is a deployment status message but not in the standard format
 
-        const messageKey = cleanMessage.trim();
-
-        if (recentDeploymentMessages.has(messageKey)) {
-          return;
-        }
-
-        // Add to recent messages and limit size
-        recentDeploymentMessages.add(messageKey);
-        if (recentDeploymentMessages.size > 100) {
-          // Remove oldest message (first item in set)
-          const firstValue = recentDeploymentMessages.values().next().value;
-          if (firstValue !== undefined) {
-            recentDeploymentMessages.delete(firstValue);
-          }
-        }
-
         // Create event object
         const eventObj: DeploymentEventData = {
           message: cleanMessage,
@@ -358,44 +375,6 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
         // Emit the deployment progress event
         io.emit('deploymentInProgress', eventObj);
       }
-    };
-
-    // Override printer.print (the lower-level method)
-    printer.print = function (message: string) {
-      // Call the original print method
-      originalPrint.call(this, message);
-
-      // Avoid double processing if this is called from printer.log
-      if (processingMessage) {
-        return;
-      }
-
-      processingMessage = true;
-
-      const cleanMessage = cleanAnsiCodes(message);
-
-      // Remove timestamp prefix if present (to avoid duplicate timestamps)
-      let finalMessage = cleanMessage;
-      const timeRegex = /^\d{1,2}:\d{2}:\d{2}\s+[AP]M\s+/;
-      if (timeRegex.test(finalMessage)) {
-        finalMessage = finalMessage.replace(timeRegex, '');
-      }
-
-      // Check if this is a deployment progress message
-      if (isDeploymentProgressMessage(cleanMessage)) {
-        handleDeploymentProgressMessage(cleanMessage);
-      } else {
-        // Emit regular messages to client (except DEBUG level)
-        // We don't have level info here, so assume INFO
-        const logData: LogEventData = {
-          timestamp: new Date().toISOString(),
-          level: 'INFO',
-          message: finalMessage,
-        };
-        io.emit('log', logData);
-      }
-
-      processingMessage = false;
     };
 
     // Listen for resource configuration changes
@@ -504,9 +483,6 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
 
         // Get the current sandbox state
         const currentState = await getSandboxState();
-
-        // Clear recent deployment messages
-        recentDeploymentMessages.clear();
 
         // Emit sandbox status update with deployment failure information
         const statusData: SandboxStatusData = {

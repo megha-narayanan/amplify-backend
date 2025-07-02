@@ -101,6 +101,9 @@ const ResourceLogPanel: React.FC<ResourceLogPanelProps> = ({
     }) => {
       if (data.resourceId === resourceId) {
         setError(data.error);
+        setTimeout(() => {
+        setError(null);
+      }, 5000);
       }
     };
 
