@@ -546,7 +546,7 @@ function App() {
         content={mainContent}
         navigationHide={true}
         toolsHide={true}
-        maxContentWidth={2000}
+        maxContentWidth={2300}
         contentType="default"
         headerSelector="#header"
       />
