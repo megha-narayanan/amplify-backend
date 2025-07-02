@@ -3,6 +3,7 @@ import assert from 'node:assert';
 import { SandboxDevToolsCommand } from './sandbox_devtools_command.js';
 import { format, printer } from '@aws-amplify/cli-core';
 import { PortChecker } from '../port_checker.js';
+import { Server } from 'node:http';
 
 void describe('SandboxDevToolsCommand', () => {
   let command: SandboxDevToolsCommand;
@@ -17,8 +18,8 @@ void describe('SandboxDevToolsCommand', () => {
     mock.method(format, 'highlight', (text: string) => text);
 
     // Mock PortChecker to prevent actual port operations
-    mock.method(PortChecker.prototype, 'isPortInUse', () =>
-      Promise.resolve(false),
+    mock.method(PortChecker.prototype, 'findAvailablePort', () =>
+      Promise.resolve(3333),
     );
 
     command = new SandboxDevToolsCommand();
@@ -62,40 +63,52 @@ void describe('SandboxDevToolsCommand', () => {
     void it('uses correct port when available', async (contextual) => {
       const portCheckerMock = contextual.mock.method(
         PortChecker.prototype,
-        'isPortInUse',
-        () => Promise.resolve(false),
+        'findAvailablePort',
+        () => Promise.resolve(4444),
       );
 
       const printMock = contextual.mock.method(printer, 'print');
 
+      // Create a mock server object
+      const mockServer = {
+        listen: mock.fn(),
+        close: mock.fn(),
+        on: mock.fn(),
+      } as unknown as Server;
+
       // Simplified handler test
       command.handler = async () => {
         const portChecker = new PortChecker();
-        const isInUse = await portChecker.isPortInUse(3333);
-        const port = isInUse ? 4444 : 3333;
+        const port = await portChecker.findAvailablePort(mockServer, 3333);
         printer.print(`DevTools server started at http://localhost:${port}`);
       };
 
       await command.handler();
 
       assert.strictEqual(portCheckerMock.mock.callCount(), 1);
-      assert.match(printMock.mock.calls[0].arguments[0], /localhost:3333/);
+      assert.match(printMock.mock.calls[0].arguments[0], /localhost:4444/);
     });
 
     void it('handles port checker errors', async (contextual) => {
-      contextual.mock.method(PortChecker.prototype, 'isPortInUse', () => {
-        throw new Error('Port check failed');
+      contextual.mock.method(PortChecker.prototype, 'findAvailablePort', () => {
+        throw new Error('No available ports');
       });
+
+      const mockServer = {
+        listen: mock.fn(),
+        close: mock.fn(),
+        on: mock.fn(),
+      } as unknown as Server;
 
       command.handler = async () => {
         const portChecker = new PortChecker();
-        await portChecker.isPortInUse(3333);
+        await portChecker.findAvailablePort(mockServer, 3333);
       };
 
       await assert.rejects(
         () => command.handler(),
         (error: Error) => {
-          assert.strictEqual(error.message, 'Port check failed');
+          assert.strictEqual(error.message, 'No available ports');
           return true;
         },
       );

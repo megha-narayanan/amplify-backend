@@ -7,7 +7,6 @@ import { dirname, join } from 'node:path';
 import { Server } from 'socket.io';
 import { LogLevel, format, printer } from '@aws-amplify/cli-core';
 import {
-  AmplifyUserError,
   BackendIdentifierConversions,
   PackageJsonReader,
 } from '@aws-amplify/platform-core';
@@ -258,20 +257,8 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
       resourceService,
     );
 
-    // Check if DevTools is running (asks user to start sandbox in Devtools, so Devtools can manage the sandbox)
     const portChecker = new PortChecker();
-    const DEVTOOLS_PORT = 3333;
-    const devToolsRunning = await portChecker.isPortInUse(DEVTOOLS_PORT);
-    if (devToolsRunning) {
-      printer.log('DevTools is currently running', LogLevel.ERROR);
-      throw new AmplifyUserError('DevToolsRunningError', {
-        message:
-          'DevTools is currently running. Please start the sandbox through DevTools instead.',
-        resolution:
-          'Open DevTools in your browser and use the "Start Sandbox" button to start the sandbox.',
-      });
-    }
-    const port = DEVTOOLS_PORT;
+    const port = await portChecker.findAvailablePort(server, 3333);
 
     printer.print(
       `${EOL}DevTools server started at ${format.highlight(`http://localhost:${port}`)}`,
