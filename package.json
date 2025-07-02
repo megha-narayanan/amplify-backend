@@ -121,7 +121,7 @@
     "*.md": "prettier --write"
   },
   "dependencies": {
-    "@aws-sdk/client-lambda": "^3.835.0",
+    "@aws-sdk/client-lambda": "^3.840.0",
     "cookie-signature": "1.0.6",
     "debounce-promise": "^3.1.2",
     "esbuild": "0.25.5",

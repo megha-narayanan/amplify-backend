@@ -1,11 +1,11 @@
 import { LogLevel, printer } from '@aws-amplify/cli-core';
 import { Server, Socket } from 'socket.io';
-// eslint-disable-next-line import/no-extraneous-dependencies
 import {
   CloudWatchLogsClient,
   DescribeLogStreamsCommand,
   GetLogEventsCommand,
 } from '@aws-sdk/client-cloudwatch-logs';
+import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
 import { Sandbox } from '@aws-amplify/sandbox';
 import { LocalStorageManager } from '../local_storage_manager.js';
 import { getLogGroupName } from '../logging/log_group_extractor.js';
@@ -73,6 +73,11 @@ export type SocketEvents = {
   stopDevTools: void;
   getSavedDeploymentProgress: void;
   getSavedResources: void;
+  testLambdaFunction: {
+    resourceId: string;
+    functionName: string;
+    input: string;
+  };
 };
 
 /**
@@ -175,6 +180,12 @@ export class SocketHandlerService {
 
     // DevTools handlers
     socket.on('stopDevTools', this.handleStopDevTools.bind(this));
+
+    // Lambda testing handler
+    socket.on(
+      'testLambdaFunction',
+      this.handleTestLambdaFunction.bind(this, socket),
+    );
   }
 
   /**
@@ -832,5 +843,68 @@ export class SocketHandlerService {
    */
   private async handleStopDevTools(): Promise<void> {
     await this.shutdownService.shutdown('user request', true);
+  }
+
+  /**
+   * Handles the testLambdaFunction event
+   */
+  private async handleTestLambdaFunction(
+    socket: Socket,
+    data: SocketEvents['testLambdaFunction'],
+  ): Promise<void> {
+    try {
+      printer.log(
+        `Testing Lambda function ${data.functionName} with input: ${data.input}`,
+        LogLevel.DEBUG,
+      );
+
+      const lambdaClient = new LambdaClient({});
+      
+      const result = await lambdaClient.send(
+        new InvokeCommand({
+          FunctionName: data.functionName,
+          Payload: new TextEncoder().encode(data.input),
+        }),
+      );
+
+      let responsePayload = result.Payload
+        ? new TextDecoder().decode(result.Payload)
+        : 'No response payload';
+
+      // Try to parse and format the response
+        const parsed = JSON.parse(responsePayload);
+        if (parsed.body && typeof parsed.body === 'string') {
+          // Try to parse the body if it's a JSON string
+          try {
+            const parsedBody = JSON.parse(parsed.body);
+            responsePayload = JSON.stringify({ ...parsed, body: parsedBody }, null, 2);
+          } catch {
+            // If body parsing fails, just format the outer JSON
+            responsePayload = JSON.stringify(parsed, null, 2);
+          }
+        } else {
+          responsePayload = JSON.stringify(parsed, null, 2);
+        }
+
+      socket.emit('lambdaTestResult', {
+        resourceId: data.resourceId,
+        result: responsePayload,
+      });
+
+      printer.log(
+        `Lambda function ${data.functionName} test completed successfully`,
+        LogLevel.INFO,
+      );
+    } catch (error) {
+      printer.log(
+        `Error testing Lambda function ${data.functionName}: ${String(error)}`,
+        LogLevel.ERROR,
+      );
+      
+      socket.emit('lambdaTestResult', {
+        resourceId: data.resourceId,
+        error: String(error),
+      });
+    }
   }
 }

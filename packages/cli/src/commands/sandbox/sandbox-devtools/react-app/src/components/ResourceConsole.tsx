@@ -792,6 +792,7 @@ const ResourceConsole: React.FC<ResourceConsoleProps> = ({
               }}
               socket={socket}
               deploymentInProgress={deploymentInProgress}
+              consoleUrl={selectedLogResource.consoleUrl}
             />
           )}
         </Grid>

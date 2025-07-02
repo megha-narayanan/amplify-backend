@@ -9,6 +9,7 @@ import {
   FormField,
   Header,
   Container,
+  Link,
 } from '@cloudscape-design/components';
 
 interface LogEntry {
@@ -23,6 +24,7 @@ interface ResourceLogPanelProps {
   onClose: () => void;
   socket: Socket | null;
   deploymentInProgress?: boolean;
+  consoleUrl?: string | null;
 }
 
 const ResourceLogPanel: React.FC<ResourceLogPanelProps> = ({
@@ -32,12 +34,18 @@ const ResourceLogPanel: React.FC<ResourceLogPanelProps> = ({
   onClose,
   socket,
   deploymentInProgress,
+  consoleUrl,
 }) => {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [isRecording, setIsRecording] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState<string>('');
+  const [testInput, setTestInput] = useState<string>('{}');
+  const [testOutput, setTestOutput] = useState<string>('');
+  const [testing, setTesting] = useState<boolean>(false);
   const logContainerRef = useRef<HTMLDivElement>(null);
+
+  const isLambdaFunction = resourceType === 'AWS::Lambda::Function';
 
   useEffect(() => {
     if (!socket) return;
@@ -107,11 +115,28 @@ const ResourceLogPanel: React.FC<ResourceLogPanelProps> = ({
       }
     };
 
+    // Listen for Lambda test results
+    const handleLambdaTestResult = (data: {
+      resourceId: string;
+      result?: string;
+      error?: string;
+    }) => {
+      if (data.resourceId === resourceId) {
+        setTesting(false);
+        if (data.error) {
+          setTestOutput(`Error: ${data.error}`);
+        } else {
+          setTestOutput(data.result || 'No output');
+        }
+      }
+    };
+
     socket.on('logStreamStatus', handleLogStreamStatus);
     socket.on('activeLogStreams', handleActiveLogStreams);
     socket.on('resourceLogs', handleResourceLogs);
     socket.on('savedResourceLogs', handleSavedResourceLogs);
     socket.on('logStreamError', handleLogStreamError);
+    socket.on('lambdaTestResult', handleLambdaTestResult);
 
     return () => {
       // Clean up event listeners
@@ -120,6 +145,7 @@ const ResourceLogPanel: React.FC<ResourceLogPanelProps> = ({
       socket.off('resourceLogs', handleResourceLogs);
       socket.off('savedResourceLogs', handleSavedResourceLogs);
       socket.off('logStreamError', handleLogStreamError);
+      socket.off('lambdaTestResult', handleLambdaTestResult);
 
       // Clear the refresh interval
       clearInterval(refreshInterval);
@@ -182,6 +208,19 @@ const ResourceLogPanel: React.FC<ResourceLogPanelProps> = ({
     }, 100);
   };
 
+  const handleTestFunction = () => {
+    if (!socket || !isLambdaFunction) return;
+    
+    setTesting(true);
+    setTestOutput('');
+    
+    socket.emit('testLambdaFunction', {
+      resourceId,
+      functionName: resourceId,
+      input: testInput
+    });
+  };
+
   return (
     <Container
       header={
@@ -189,6 +228,11 @@ const ResourceLogPanel: React.FC<ResourceLogPanelProps> = ({
           variant="h2"
           actions={
             <SpaceBetween direction="horizontal" size="xs">
+              {consoleUrl && !deploymentInProgress && (
+                <Link href={consoleUrl} external>
+                  View in AWS Console
+                </Link>
+              )}
               <Button
                 onClick={toggleRecording}
                 variant={isRecording ? 'normal' : 'primary'}
@@ -226,6 +270,45 @@ const ResourceLogPanel: React.FC<ResourceLogPanelProps> = ({
             placeholder="Search in logs..."
           />
         </FormField>
+
+        {isLambdaFunction && (
+          <SpaceBetween direction="vertical" size="s">
+            <FormField label="Test Input (JSON)">
+              <Input
+                value={testInput}
+                onChange={({ detail }) => setTestInput(detail.value)}
+                placeholder='{"key": "value"}'
+                disabled={testing || deploymentInProgress}
+              />
+            </FormField>
+            <Button 
+              onClick={handleTestFunction} 
+              loading={testing}
+              disabled={deploymentInProgress}
+            >
+              Test Function
+            </Button>
+            {testOutput && (
+              <div
+                style={{
+                  fontFamily: 'monospace',
+                  fontSize: '14px',
+                  backgroundColor: '#f5f5f5',
+                  padding: '10px',
+                  borderRadius: '4px',
+                  whiteSpace: 'pre-wrap',
+                  maxHeight: '200px',
+                  overflowY: 'auto',
+                  border: '1px solid #ddd'
+                }}
+              >
+                <strong>Test Output:</strong>
+                <br />
+                {testOutput}
+              </div>
+            )}
+          </SpaceBetween>
+        )}
 
         <div
           ref={logContainerRef}
