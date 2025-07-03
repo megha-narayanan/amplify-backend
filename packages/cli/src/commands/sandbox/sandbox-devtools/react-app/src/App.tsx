@@ -21,13 +21,12 @@ import '@cloudscape-design/global-styles/index.css';
  * Type definition for sandbox status
  */
 export type SandboxStatus =
-  | 'running' // Sandbox is running
-  | 'stopped' // Sandbox is stopped
-  | 'nonexistent' // Sandbox does not exist
-  | 'unknown' // Status is unknown
-  | 'deploying' // Sandbox is being deployed
-  | 'deleting' // Sandbox is being deleted
-  | 'stopping'; // Sandbox is being stopped
+  | 'running' 
+  | 'stopped' 
+  | 'nonexistent' 
+  | 'unknown' 
+  | 'deploying' 
+  | 'deleting'; 
 
 interface LogEntry {
   id: string;
