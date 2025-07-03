@@ -23,6 +23,8 @@ interface ResourceStatus {
   status: string;
   timestamp: string;
   key: string;
+  statusReason?: string;
+  eventId?: string;
 }
 
 interface DeploymentEvent {
@@ -95,6 +97,33 @@ const DeploymentProgress: React.FC<DeploymentProgressProps> = ({
     // Request saved deployment progress when component mounts
     console.log('DeploymentProgress: Requesting saved deployment progress');
     socket.emit('getSavedDeploymentProgress');
+    
+    // Request CloudFormation events directly from the API
+    if (socket && status) {
+      console.log('DeploymentProgress: Requesting CloudFormation events');
+      const identifier = window.localStorage.getItem('sandboxIdentifier');
+      socket.emit('getCloudFormationEvents', { 
+        identifier: identifier || 'default'
+      });
+      
+      // Set up polling for CloudFormation events during deployment or deletion
+      let cfnEventsInterval: NodeJS.Timeout | null = null;
+      if (status === 'deploying' || status === 'deleting') {
+        cfnEventsInterval = setInterval(() => {
+          console.log('Polling for CloudFormation events');
+          const identifier = window.localStorage.getItem('sandboxIdentifier');
+          socket.emit('getCloudFormationEvents', { 
+            identifier: identifier || 'default'
+          });
+        }, 5000); // Poll every 5 seconds
+      }
+      
+      return () => {
+        if (cfnEventsInterval) {
+          clearInterval(cfnEventsInterval);
+        }
+      };
+    }
 
     const handleDeploymentInProgress = (data: {
       message: string;
@@ -172,13 +201,59 @@ const DeploymentProgress: React.FC<DeploymentProgressProps> = ({
         );
       }
     };
+    
+    // Handle CloudFormation events from the API
+    const handleCloudFormationEvents = (cfnEvents: DeploymentEvent[]) => {
+      console.log('Received CloudFormation events:', cfnEvents.length);
+      
+      if (cfnEvents.length === 0) return;
+      
+      // During deployment or deletion, replace all events with the new ones
+      if (status === 'deploying' || status === 'deleting') {
+        // Process each event
+        const newResourceStatuses: Record<string, ResourceStatus> = {};
+        
+        cfnEvents.forEach((event) => {
+          if (event.resourceStatus) {
+            newResourceStatuses[event.resourceStatus.key] = event.resourceStatus;
+          }
+        });
+        
+        // Update state with all processed events
+        setResourceStatuses(newResourceStatuses);
+        setEvents(cfnEvents);
+      } else {
+        // Otherwise, just store them for later viewing
+        // Process each event
+        const newResourceStatuses = { ...resourceStatuses };
+        
+        cfnEvents.forEach((event) => {
+          if (event.resourceStatus) {
+            newResourceStatuses[event.resourceStatus.key] = event.resourceStatus;
+          }
+        });
+        
+        // Update state with all processed events
+        setResourceStatuses(newResourceStatuses);
+        setEvents(cfnEvents);
+      }
+    };
+    
+    // Handle CloudFormation events error
+    const handleCloudFormationEventsError = (error: { error: string }) => {
+      console.error('Error fetching CloudFormation events:', error.error);
+    };
 
     socket.on('deploymentInProgress', handleDeploymentInProgress);
     socket.on('savedDeploymentProgress', handleSavedDeploymentProgress);
+    socket.on('cloudFormationEvents', handleCloudFormationEvents);
+    socket.on('cloudFormationEventsError', handleCloudFormationEventsError);
 
     return () => {
       socket.off('deploymentInProgress', handleDeploymentInProgress);
       socket.off('savedDeploymentProgress', handleSavedDeploymentProgress);
+      socket.off('cloudFormationEvents', handleCloudFormationEvents);
+      socket.off('cloudFormationEventsError', handleCloudFormationEventsError);
     };
   }, [socket]);
 

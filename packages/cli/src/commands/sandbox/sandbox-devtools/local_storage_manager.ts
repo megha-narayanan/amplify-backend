@@ -1,3 +1,4 @@
+/* eslint-disable spellcheck/spell-checker */
 /* eslint-disable jsdoc/check-param-names */
 import fs from 'fs';
 import path from 'path';
@@ -14,6 +15,24 @@ export type DeploymentEvent = {
   logicalResourceId?: string;
   resourceStatus?: string;
   message?: string;
+};
+
+/**
+ * Represents a CloudFormation event
+ */
+export type CloudFormationEvent = {
+  message: string;
+  timestamp: string;
+  resourceStatus?: {
+    resourceType: string;
+    resourceName: string;
+    status: string;
+    timestamp: string;
+    key: string;
+    statusReason?: string;
+    eventId?: string;
+  };
+  isGeneric?: boolean;
 };
 
 /**
@@ -458,6 +477,46 @@ export class LocalStorageManager {
         LogLevel.ERROR,
       );
     }
+  }
+
+  /**
+   * Saves CloudFormation events to a file
+   * @param events The CloudFormation events to save
+   */
+  saveCloudFormationEvents(events: CloudFormationEvent[]): void {
+    try {
+      const filePath = path.join(this.baseDir, 'cloudformation-events.json');
+      fs.writeFileSync(filePath, JSON.stringify(events, null, 2));
+      printer.log(
+        `LocalStorageManager: CloudFormation events saved successfully`,
+        LogLevel.DEBUG,
+      );
+    } catch (error) {
+      printer.log(
+        `LocalStorageManager: Error saving CloudFormation events: ${String(error)}`,
+        LogLevel.ERROR,
+      );
+    }
+  }
+
+  /**
+   * Loads CloudFormation events from a file
+   * @returns The saved CloudFormation events or an empty array if none exist
+   */
+  loadCloudFormationEvents(): CloudFormationEvent[] {
+    try {
+      const filePath = path.join(this.baseDir, 'cloudformation-events.json');
+      if (fs.existsSync(filePath)) {
+        const data = fs.readFileSync(filePath, 'utf8');
+        return JSON.parse(data);
+      }
+    } catch (error) {
+      printer.log(
+        `LocalStorageManager: Error loading CloudFormation events: ${String(error)}`,
+        LogLevel.ERROR,
+      );
+    }
+    return [];
   }
 
   /**

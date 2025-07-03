@@ -15,6 +15,7 @@ import {
   ResourceStatus,
   extractCloudFormationEvents,
   parseDeploymentMessage,
+  CloudFormationEventsService,
 } from '../logging/cloudformation_format.js';
 
 /**
@@ -78,6 +79,9 @@ export type SocketEvents = {
     functionName: string;
     input: string;
   };
+  getCloudFormationEvents: {
+    identifier: string;
+  };
 };
 
 /**
@@ -100,6 +104,10 @@ export class SocketHandlerService {
     private activeLogPollers = new Map<string, NodeJS.Timeout>(),
     // Track when logging was toggled on for each resource
     private toggleStartTimes = new Map<string, number>(),
+    // Track the timestamp of the last CloudFormation event we've seen for each sandbox
+    private lastEventTimestamp: Record<string, Date> = {},
+    // CloudFormation events service
+    private cloudFormationEventsService = new CloudFormationEventsService(),
   ) {}
 
   /**
@@ -123,6 +131,12 @@ export class SocketHandlerService {
     socket.on(
       'getActiveLogStreams',
       this.handleGetActiveLogStreams.bind(this, socket),
+    );
+    
+    // CloudFormation events handler
+    socket.on(
+      'getCloudFormationEvents',
+      this.handleGetCloudFormationEvents.bind(this, socket),
     );
 
     // Log settings handlers
@@ -904,6 +918,89 @@ export class SocketHandlerService {
       socket.emit('lambdaTestResult', {
         resourceId: data.resourceId,
         error: String(error),
+      });
+    }
+  }
+  
+  /**
+   * Handles the getCloudFormationEvents event
+   * Fetches CloudFormation events directly from the AWS API
+   */
+  private async handleGetCloudFormationEvents(
+    socket: Socket,
+    data: SocketEvents['getCloudFormationEvents'],
+  ): Promise<void> {
+    try {
+      const backendId = { 
+        name: data.identifier, 
+        namespace: 'amplify',
+        type: 'sandbox' as const
+      };
+      
+      // Get current sandbox state
+      const sandboxState = this.sandbox.getState();
+      
+      // If not deploying or deleting, we can return a cached version if available
+      const shouldUseCachedEvents = 
+        sandboxState !== 'deploying' && 
+        sandboxState !== 'deleting';
+      
+      if (shouldUseCachedEvents) {
+        // Try to get cached events first
+        const cachedEvents = this.storageManager.loadCloudFormationEvents();
+        if (cachedEvents && cachedEvents.length > 0) {
+          printer.log('Returning cached CloudFormation events', LogLevel.DEBUG);
+          socket.emit('cloudFormationEvents', cachedEvents);
+          return;
+        }
+      }
+      
+      // Only get events since the last one we've seen if we're in an active deployment or deletion
+      const sinceTimestamp = 
+        (sandboxState === 'deploying' || sandboxState === 'deleting')
+          ? this.lastEventTimestamp[data.identifier] 
+          : undefined;
+      
+      // Fetch fresh events from CloudFormation API
+      printer.log('Fetching CloudFormation events...', LogLevel.DEBUG);
+      const events = await this.cloudFormationEventsService.getStackEvents(
+        backendId, 
+        sinceTimestamp
+      );
+      
+      // Update the last event timestamp if we got any events
+      if (events.length > 0) {
+        // Find the most recent event
+        const latestEvent = events.reduce((latest, event) => 
+          !latest || (event.timestamp > latest.timestamp) ? event : latest
+        , null as any);
+        
+        if (latestEvent) {
+          this.lastEventTimestamp[data.identifier] = latestEvent.timestamp;
+        }
+      }
+      
+      // Map events to the format expected by the frontend
+      const formattedEvents = events.map(event => {
+        const resourceStatus = this.cloudFormationEventsService.convertToResourceStatus(event);
+        return {
+          message: `${event.timestamp.toLocaleTimeString()} | ${event.status} | ${event.resourceType} | ${event.logicalId}`,
+          timestamp: event.timestamp.toISOString(),
+          resourceStatus,
+          isGeneric: false
+        };
+      });
+      
+      // Cache events if we're not in an active deployment
+      if (shouldUseCachedEvents && formattedEvents.length > 0) {
+        this.storageManager.saveCloudFormationEvents(formattedEvents);
+      }
+      
+      socket.emit('cloudFormationEvents', formattedEvents);
+    } catch (error) {
+      printer.log(`Error in handleGetCloudFormationEvents: ${String(error)}`, LogLevel.ERROR);
+      socket.emit('cloudFormationEventsError', {
+        error: String(error)
       });
     }
   }
