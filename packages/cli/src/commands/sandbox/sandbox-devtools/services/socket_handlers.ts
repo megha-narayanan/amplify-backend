@@ -5,17 +5,15 @@ import {
   DescribeLogStreamsCommand,
   GetLogEventsCommand,
 } from '@aws-sdk/client-cloudwatch-logs';
-import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
+import { InvokeCommand, LambdaClient } from '@aws-sdk/client-lambda';
 import { Sandbox } from '@aws-amplify/sandbox';
 import { LocalStorageManager } from '../local_storage_manager.js';
 import { getLogGroupName } from '../logging/log_group_extractor.js';
 import { ClientConfigFormat } from '@aws-amplify/client-config';
+import { BackendIdentifier } from '@aws-amplify/plugin-types';
 import { ResourceService } from './resource_service.js';
 import {
-  ResourceStatus,
-  extractCloudFormationEvents,
-  parseDeploymentMessage,
-  CloudFormationEventsService,
+  CloudFormationEventsService
 } from '../logging/cloudformation_format.js';
 
 /**
@@ -47,12 +45,6 @@ export type SocketEvents = {
     resourceId: string;
   };
   getSandboxStatus: void;
-  deploymentInProgress: {
-    message: string;
-    timestamp: string;
-    resourceStatus?: ResourceStatus;
-    isGeneric?: boolean;
-  };
   amplifyCloudFormationProgressUpdate: {
     message: string;
   };
@@ -67,21 +59,19 @@ export type SocketEvents = {
     logsFilter?: string;
     logsOutFile?: string;
     debugMode?: boolean;
-    profile?: string;
   };
   stopSandbox: void;
   deleteSandbox: void;
   stopDevTools: void;
   getSavedDeploymentProgress: void;
   getSavedResources: void;
+  getSavedCloudFormationEvents: void;
   testLambdaFunction: {
     resourceId: string;
     functionName: string;
     input: string;
   };
-  getCloudFormationEvents: {
-    identifier: string;
-  };
+  getCloudFormationEvents: void;
 };
 
 /**
@@ -95,7 +85,7 @@ export class SocketHandlerService {
     private io: Server,
     private sandbox: Sandbox,
     private getSandboxState: () => Promise<string>,
-    private backendId: { name: string },
+    private backendId: BackendIdentifier,
     private shutdownService: import('./shutdown_service.js').ShutdownService,
     private backendClient: Record<string, unknown>,
     private storageManager: LocalStorageManager,
@@ -162,14 +152,6 @@ export class SocketHandlerService {
       'getSandboxStatus',
       this.handleGetSandboxStatus.bind(this, socket),
     );
-    socket.on(
-      'deploymentInProgress',
-      this.handleDeploymentInProgress.bind(this, socket),
-    );
-    socket.on(
-      'amplifyCloudFormationProgressUpdate',
-      this.handleAmplifyCloudFormationProgressUpdate.bind(this, socket),
-    );
 
     // Resource handlers
     socket.on(
@@ -177,12 +159,12 @@ export class SocketHandlerService {
       this.handleGetDeployedBackendResources.bind(this, socket),
     );
     socket.on(
-      'getSavedDeploymentProgress',
-      this.handleGetSavedDeploymentProgress.bind(this, socket),
-    );
-    socket.on(
       'getSavedResources',
       this.handleGetSavedResources.bind(this, socket),
+    );
+    socket.on(
+      'getSavedCloudFormationEvents',
+      this.handleGetSavedCloudFormationEvents.bind(this, socket),
     );
 
     // Sandbox operation handlers
@@ -625,7 +607,6 @@ export class SocketHandlerService {
         LogLevel.INFO,
       );
       const status = await this.getSandboxState();
-      printer.log(`Sending sandboxStatus to client: ${status}`, LogLevel.INFO);
 
       // Add a timestamp to help with debugging
       const timestamp = new Date().toISOString();
@@ -635,11 +616,6 @@ export class SocketHandlerService {
         identifier: this.backendId.name,
         timestamp,
       });
-
-      printer.log(
-        `Sent sandboxStatus to client: ${status} at ${timestamp}`,
-        LogLevel.INFO,
-      );
     } catch (error) {
       printer.log(
         `Error getting sandbox status on request: ${String(error)}`,
@@ -651,55 +627,6 @@ export class SocketHandlerService {
         identifier: this.backendId.name,
         timestamp: new Date().toISOString(),
       });
-    }
-  }
-
-  /**
-   * Handles the deploymentInProgress event
-   */
-  private handleDeploymentInProgress(
-    socket: Socket,
-    data: SocketEvents['deploymentInProgress'],
-  ): void {
-    printer.log(`Deployment in progress: ${data.message}`, LogLevel.INFO);
-
-    // Parse the message to extract structured information
-    const resourceStatus = parseDeploymentMessage(data.message);
-
-    // Create the event object with parsed data
-    const eventObj = {
-      message: data.message,
-      timestamp: data.timestamp || new Date().toISOString(),
-      resourceStatus: resourceStatus || undefined,
-      isGeneric: !resourceStatus,
-    };
-
-    // Broadcast to all clients
-    this.io.emit('deploymentInProgress', eventObj);
-  }
-
-  /**
-   * Handles the amplifyCloudFormationProgressUpdate event
-   */
-  private handleAmplifyCloudFormationProgressUpdate(
-    socket: Socket,
-    data: SocketEvents['amplifyCloudFormationProgressUpdate'],
-  ): void {
-    printer.log(`CloudFormation progress update received`, LogLevel.DEBUG);
-    // Extract CloudFormation events from the message
-    const cfnEvents = extractCloudFormationEvents(data.message);
-
-    // Send each event to the client
-    for (const event of cfnEvents) {
-      if (event) {
-        const resourceStatus = parseDeploymentMessage(event);
-        this.io.emit('deploymentInProgress', {
-          message: event,
-          timestamp: new Date().toISOString(),
-          resourceStatus: resourceStatus || undefined,
-          isGeneric: !resourceStatus,
-        });
-      }
     }
   }
 
@@ -748,26 +675,6 @@ export class SocketHandlerService {
     }
   }
 
-  /**
-   * Handles the getSavedDeploymentProgress event
-   */
-  private handleGetSavedDeploymentProgress(socket: Socket): void {
-    const events = this.storageManager.loadDeploymentProgress();
-
-    // Parse each event before sending to client
-    const parsedEvents = events.map((event) => {
-      const resourceStatus = event.message
-        ? parseDeploymentMessage(event.message)
-        : null;
-      return {
-        ...event,
-        resourceStatus: resourceStatus || undefined,
-        isGeneric: !resourceStatus,
-      };
-    });
-
-    socket.emit('savedDeploymentProgress', parsedEvents);
-  }
 
   /**
    * Handles the getSavedResources event
@@ -775,6 +682,14 @@ export class SocketHandlerService {
   private handleGetSavedResources(socket: Socket): void {
     const resources = this.storageManager.loadResources();
     socket.emit('savedResources', resources || []);
+  }
+
+  /**
+   * Handles the getSavedCloudFormationEvents event
+   */
+  private handleGetSavedCloudFormationEvents(socket: Socket): void {
+    const events = this.storageManager.loadCloudFormationEvents();
+    socket.emit('savedCloudFormationEvents', events);
   }
 
   /**
@@ -788,7 +703,7 @@ export class SocketHandlerService {
         `Starting sandbox with options: ${JSON.stringify(options)}`,
         LogLevel.DEBUG,
       );
-
+  
       // Prepare sandbox options
       const sandboxOptions = {
         dir: options.dirToWatch || './amplify',
@@ -825,12 +740,21 @@ export class SocketHandlerService {
 
       // Stop the sandbox
       // The sandbox will emit events that update the UI status
-      await this.sandbox.stop();
-
+      await this.sandbox.stop(); 
+      
       printer.log('Sandbox stop command issued successfully', LogLevel.DEBUG);
     } catch (error) {
       printer.log(`Error stopping sandbox: ${String(error)}`, LogLevel.ERROR);
-      throw error;
+      
+      // Send error status to client instead of throwing
+      if (this.io) {
+        this.io.emit('sandboxStatus', {
+          status: await this.getSandboxState(),
+          error: true,
+          message: `Error stopping sandbox: ${String(error)}`,
+          timestamp: new Date().toISOString(),
+        });
+      }
     }
   }
 
@@ -927,81 +851,82 @@ export class SocketHandlerService {
    * Fetches CloudFormation events directly from the AWS API
    */
   private async handleGetCloudFormationEvents(
-    socket: Socket,
-    data: SocketEvents['getCloudFormationEvents'],
-  ): Promise<void> {
-    try {
-      const backendId = { 
-        name: data.identifier, 
-        namespace: 'amplify',
-        type: 'sandbox' as const
-      };
-      
-      // Get current sandbox state
-      const sandboxState = this.sandbox.getState();
-      
-      // If not deploying or deleting, we can return a cached version if available
-      const shouldUseCachedEvents = 
-        sandboxState !== 'deploying' && 
-        sandboxState !== 'deleting';
-      
-      if (shouldUseCachedEvents) {
-        // Try to get cached events first
-        const cachedEvents = this.storageManager.loadCloudFormationEvents();
-        if (cachedEvents && cachedEvents.length > 0) {
-          printer.log('Returning cached CloudFormation events', LogLevel.DEBUG);
-          socket.emit('cloudFormationEvents', cachedEvents);
-          return;
-        }
-      }
-      
-      // Only get events since the last one we've seen if we're in an active deployment or deletion
-      const sinceTimestamp = 
-        (sandboxState === 'deploying' || sandboxState === 'deleting')
-          ? this.lastEventTimestamp[data.identifier] 
-          : undefined;
-      
-      // Fetch fresh events from CloudFormation API
-      printer.log('Fetching CloudFormation events...', LogLevel.DEBUG);
-      const events = await this.cloudFormationEventsService.getStackEvents(
-        backendId, 
-        sinceTimestamp
-      );
-      
-      // Update the last event timestamp if we got any events
-      if (events.length > 0) {
-        // Find the most recent event
-        const latestEvent = events.reduce((latest, event) => 
-          !latest || (event.timestamp > latest.timestamp) ? event : latest
-        , null as any);
-        
-        if (latestEvent) {
-          this.lastEventTimestamp[data.identifier] = latestEvent.timestamp;
-        }
-      }
-      
-      // Map events to the format expected by the frontend
-      const formattedEvents = events.map(event => {
-        const resourceStatus = this.cloudFormationEventsService.convertToResourceStatus(event);
-        return {
-          message: `${event.timestamp.toLocaleTimeString()} | ${event.status} | ${event.resourceType} | ${event.logicalId}`,
-          timestamp: event.timestamp.toISOString(),
-          resourceStatus,
-          isGeneric: false
-        };
-      });
-      
-      // Cache events if we're not in an active deployment
-      if (shouldUseCachedEvents && formattedEvents.length > 0) {
-        this.storageManager.saveCloudFormationEvents(formattedEvents);
-      }
-      
-      socket.emit('cloudFormationEvents', formattedEvents);
-    } catch (error) {
-      printer.log(`Error in handleGetCloudFormationEvents: ${String(error)}`, LogLevel.ERROR);
-      socket.emit('cloudFormationEventsError', {
-        error: String(error)
-      });
+  socket: Socket
+): Promise<void> {
+  try {
+    
+    // Get current sandbox state
+    const sandboxState = this.sandbox.getState();
+    
+    // Don't fetch events if sandbox doesn't exist
+    if (sandboxState === 'nonexistent') {
+      return;
     }
+    
+    // If not deploying or deleting, we can return a cached version if available
+    const shouldUseCachedEvents = 
+      sandboxState !== 'deploying' && 
+      sandboxState !== 'deleting';
+    
+    if (shouldUseCachedEvents) {
+      // Try to get cached events first
+      const cachedEvents = this.storageManager.loadCloudFormationEvents();
+      
+      if (cachedEvents && cachedEvents.length > 0) {
+        socket.emit('cloudFormationEvents', cachedEvents);
+        return;
+      }
+    }
+    
+    // Only get events since the last one we've seen if we're in an active deployment or deletion
+    const sinceTimestamp = 
+      (sandboxState === 'deploying' || sandboxState === 'deleting')
+        ? this.lastEventTimestamp[this.backendId.name] 
+        : undefined;
+     
+    // Fetch fresh events from CloudFormation API
+    const events = await this.cloudFormationEventsService.getStackEvents(
+      this.backendId, 
+      sinceTimestamp
+    );
+
+    // Only proceed if we have new events
+    if (events.length === 0) {
+      return;
+    }
+    
+    // Update the last event timestamp if we got any events
+    const latestEvent = events.reduce((latest, event) => 
+      !latest || (event.timestamp > latest.timestamp) ? event : latest
+    , null as any);
+    
+    if (latestEvent) {
+      this.lastEventTimestamp[this.backendId.name] = latestEvent.timestamp;
+    }
+
+    
+    // Map events to the format expected by the frontend
+    const formattedEvents = events.map(event => {
+      const resourceStatus = this.cloudFormationEventsService.convertToResourceStatus(event);
+      return {
+        message: `${event.timestamp.toLocaleTimeString()} | ${event.status} | ${event.resourceType} | ${event.logicalId}`,
+        timestamp: event.timestamp.toISOString(),
+        resourceStatus,
+        isGeneric: false
+      };
+    });
+
+    // Cache events if we're not in an active deployment
+    if (shouldUseCachedEvents && formattedEvents.length > 0) {
+      this.storageManager.saveCloudFormationEvents(formattedEvents);
+    }
+    
+    socket.emit('cloudFormationEvents', formattedEvents);
+  } catch (error) {
+    printer.log(`Error fetching CloudFormation events: ${String(error)}`, LogLevel.ERROR);
+    socket.emit('cloudFormationEventsError', {
+      error: String(error)
+    });
   }
+}
 }

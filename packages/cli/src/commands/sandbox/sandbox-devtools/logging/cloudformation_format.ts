@@ -94,68 +94,6 @@ export const cleanAnsiCodes = (text: string): string => {
 
   return text.replace(ansiEscapeCodesPattern, '');
 };
-
-/**
- * Check if a line matches CloudFormation event patterns
- * @param cleanLine The cleaned line to check
- * @returns True if the line matches any CloudFormation pattern
- */
-const matchesCloudFormationPattern = (cleanLine: string): boolean => {
-  const originalMatch = /\s+[AP]M\s+\|\s+[A-Z_]+\s+\|\s+.+\s+\|\s+.+/.test(
-    cleanLine,
-  );
-  const actualMatch =
-    /\d+:\d+:\d+\s+[AP]M.*?\|\s*\d+\s*\|\s*\d+:\d+:\d+\s+[AP]M\s*\|\s*[A-Z_]+\s*\|\s*.*?\s*\|\s*.*/.test(
-      cleanLine,
-    );
-  const simpleMatch = /\|\s*[A-Z_]+\s*\|\s*AWS::[A-Za-z0-9:]+/.test(cleanLine);
-  const hasDeploymentKeywords =
-    cleanLine.includes('_IN_PROGRESS') ||
-    cleanLine.includes('CREATE_') ||
-    cleanLine.includes('DELETE_') ||
-    cleanLine.includes('UPDATE_') ||
-    cleanLine.includes('COMPLETE') ||
-    cleanLine.includes('FAILED');
-  return (
-    originalMatch ||
-    actualMatch ||
-    simpleMatch ||
-    (hasDeploymentKeywords && cleanLine.includes('|'))
-  );
-};
-
-/**
- * Check if a message is a deployment progress message
- * @param message The message to check
- * @returns True if the message is a deployment progress message
- */
-export const isDeploymentProgressMessage = (message: string): boolean => {
-  const cleanedMessage = cleanAnsiCodes(message);
-  return (
-    matchesCloudFormationPattern(cleanedMessage) ||
-    cleanedMessage.includes('Deployment in progress')
-  );
-};
-
-/**
- * Extract CloudFormation events from a message
- * @param message The message to extract events from
- * @returns An array of CloudFormation events
- */
-export const extractCloudFormationEvents = (message: string): string[] => {
-  const events: string[] = [];
-  const lines = message.split('\n');
-
-  for (const line of lines) {
-    const cleanLine = cleanAnsiCodes(line);
-    if (matchesCloudFormationPattern(cleanLine)) {
-      events.push(line);
-    }
-  }
-
-  return events;
-};
-
 /**
  * Type for parsed CloudFormation resource status
  */
@@ -169,37 +107,6 @@ export type ResourceStatus = {
   eventId?: string;
 };
 
-/**
- * Parse a deployment message to extract structured information
- * @param message The message to parse
- * @returns A ResourceStatus object or null if the message doesn't match the expected format
- */
-export const parseDeploymentMessage = (
-  message: string,
-): ResourceStatus | null => {
-  const cfnMatch = message.match(
-    /(\d+:\d+:\d+\s+[AP]M)\s+\|\s+([A-Z_]+)\s+\|\s+([^|]+)\s+\|\s+(.+)/,
-  );
-  if (cfnMatch) {
-    const timestamp = cfnMatch[1].trim();
-    const status = cfnMatch[2].trim();
-    const resourceType = cfnMatch[3].trim();
-    const resourceName = cfnMatch[4].trim();
-
-    // Create a unique key for this resource
-    const key = `${resourceType}:${resourceName}`;
-
-    return {
-      resourceType,
-      resourceName,
-      status,
-      timestamp,
-      key,
-    };
-  }
-
-  return null;
-};
 
 import { CloudFormationClient, DescribeStackEventsCommand, StackEvent } from '@aws-sdk/client-cloudformation';
 import { LogLevel, printer } from '@aws-amplify/cli-core';
@@ -240,24 +147,33 @@ export class CloudFormationEventsService {
   async getStackEvents(backendId: BackendIdentifier, sinceTimestamp?: Date): Promise<CloudFormationEventDetails[]> {
     try {
       const stackName = BackendIdentifierConversions.toStackName(backendId);
-      printer.log(`Fetching CloudFormation events for stack: ${stackName}`, LogLevel.DEBUG);
+      printer.log(`[DEBUG] Fetching CloudFormation events for stack: ${stackName}`, LogLevel.DEBUG);
       
-      const response = await this.cfnClient.send(
-        new DescribeStackEventsCommand({ StackName: stackName })
-      );
+      // Log the API call parameters
+      
+      const command = new DescribeStackEventsCommand({ StackName: stackName });
+      
+      const response = await this.cfnClient.send(command);
       
       let events = response.StackEvents || [];
       
       // Filter events by timestamp if provided
       if (sinceTimestamp) {
+        const beforeCount = events.length;
         events = events.filter(event => 
           event.Timestamp && event.Timestamp > sinceTimestamp
         );
+        printer.log(`Filtered events by timestamp: ${beforeCount} -> ${events.length}`, LogLevel.DEBUG);
       }
       
-      return events.map(event => this.mapStackEvent(event));
+      const mappedEvents = events.map(event => this.mapStackEvent(event));
+      
+      return mappedEvents;
     } catch (error) {
       printer.log(`Error fetching CloudFormation events: ${String(error)}`, LogLevel.ERROR);
+      if (error instanceof Error) {
+        printer.log(`Error stack: ${error.stack}`, LogLevel.DEBUG);
+      }
       return [];
     }
   }
@@ -278,7 +194,7 @@ export class CloudFormationEventsService {
       eventId: event.eventId
     };
   }
-  
+
   /**
    * Maps AWS SDK StackEvent to our CloudFormationEventDetails type
    * @param event The StackEvent from AWS SDK

@@ -3,14 +3,13 @@ import assert from 'node:assert';
 import { SocketHandlerService } from './socket_handlers.js';
 import { printer } from '@aws-amplify/cli-core';
 import type { Server, Socket } from 'socket.io';
-// eslint-disable-next-line import/no-extraneous-dependencies
 import { LambdaClient } from '@aws-sdk/client-lambda';
-// eslint-disable-next-line import/no-extraneous-dependencies
 import { CloudWatchLogsClient } from '@aws-sdk/client-cloudwatch-logs';
 import type { LocalStorageManager } from '../local_storage_manager.js';
 import type { ResourceService } from './resource_service.js';
 import type { ShutdownService } from './shutdown_service.js';
 import type { Sandbox } from '@aws-amplify/sandbox';
+import { BackendIdentifier } from '@aws-amplify/plugin-types';
 
 // Define the return type of mock.fn()
 type MockFn = ReturnType<typeof mock.fn>;
@@ -91,7 +90,7 @@ void describe('SocketHandlerService', () => {
     mockShutdownService = { shutdown: mock.fn() } as unknown as ShutdownService;
 
     service = new SocketHandlerService(
-      mockIo, mockSandbox, async () => 'running', { name: 'test-backend' },
+      mockIo, mockSandbox, async () => 'running', { name: 'test-backend' } as BackendIdentifier,
       mockShutdownService, {}, mockStorageManager, mockResourceService,
     );
   });
@@ -360,7 +359,7 @@ void describe('SocketHandlerService', () => {
       const errorMessage = 'Failed to get sandbox state';
       const errorService = new SocketHandlerService(
         mockIo, mockSandbox, async () => { throw new Error(errorMessage); }, 
-        { name: 'test-backend' }, mockShutdownService, {}, mockStorageManager, mockResourceService
+        { name: 'test-backend' } as BackendIdentifier, mockShutdownService, {}, mockStorageManager, mockResourceService
       );
 
       errorService.setupSocketHandlers(mockSocket);

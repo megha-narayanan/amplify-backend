@@ -38,14 +38,14 @@ export type Sandbox = {
 } & EventEmitter;
 
 export type SandboxEvents =
-  | 'deploymentStarted' // Event emitted when deployment starts
+  | 'deploymentStarted' 
   | 'successfulDeployment'
   | 'failedDeployment'
-  | 'deletionStarted' // Event emitted when deletion starts
+  | 'deletionStarted'
   | 'successfulDeletion'
-  | 'failedDeletion' // Event emitted when deletion fails
-  | 'successfulStop' // Event emitted when stop succeeds
-  | 'failedStop'; // Event emitted when stop fails
+  | 'failedDeletion'
+  | 'successfulStop'
+  | 'failedStop';
 
 export type SandboxOptions = {
   dir?: string;

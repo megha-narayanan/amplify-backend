@@ -2,9 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert';
 import {
   cleanAnsiCodes,
-  createFriendlyName,
-  extractCloudFormationEvents,
-  isDeploymentProgressMessage,
+  createFriendlyName
 } from './cloudformation_format.js';
 
 void describe('createFriendlyName function', () => {
@@ -76,91 +74,6 @@ void describe('cleanAnsiCodes function', () => {
     assert.strictEqual(
       cleanAnsiCodes(text),
       'Text with Dim and Bold formatting',
-    );
-  });
-});
-
-void describe('isDeploymentProgressMessage function', () => {
-  void it('identifies CloudFormation status messages', () => {
-    assert.strictEqual(
-      isDeploymentProgressMessage(' | CREATE_IN_PROGRESS'),
-      true,
-    );
-    assert.strictEqual(isDeploymentProgressMessage(' | UPDATE_COMPLETE'), true);
-    assert.strictEqual(isDeploymentProgressMessage(' | DELETE_FAILED'), true);
-  });
-
-  void it('identifies deployment progress messages', () => {
-    assert.strictEqual(
-      isDeploymentProgressMessage('Deployment in progress'),
-      true,
-    );
-  });
-
-  void it('identifies CloudFormation event log format', () => {
-    const cfnEvent =
-      '10:15:30 AM | CREATE_IN_PROGRESS | AWS::Lambda::Function | MyFunction';
-    assert.strictEqual(isDeploymentProgressMessage(cfnEvent), true);
-  });
-
-  void it('returns false for non-deployment messages', () => {
-    assert.strictEqual(
-      isDeploymentProgressMessage('Regular log message'),
-      false,
-    );
-    assert.strictEqual(
-      isDeploymentProgressMessage('Error: something went wrong'),
-      false,
-    );
-  });
-
-  void it('handles messages with ANSI color codes', () => {
-    const coloredMessage = '\u001b[32m | CREATE_COMPLETE\u001b[0m';
-    assert.strictEqual(isDeploymentProgressMessage(coloredMessage), true);
-  });
-});
-
-void describe('extractCloudFormationEvents function', () => {
-  void it('extracts CloudFormation events from log messages', () => {
-    const logMessage =
-      'Some log message\n10:15:30 AM | CREATE_IN_PROGRESS | AWS::Lambda::Function | MyFunction\nAnother log message';
-    const events = extractCloudFormationEvents(logMessage);
-    assert.strictEqual(events.length, 1);
-    assert.strictEqual(
-      events[0],
-      '10:15:30 AM | CREATE_IN_PROGRESS | AWS::Lambda::Function | MyFunction',
-    );
-  });
-
-  void it('extracts multiple CloudFormation events', () => {
-    const logMessage =
-      '10:15:30 AM | CREATE_IN_PROGRESS | AWS::Lambda::Function | MyFunction\n10:16:00 AM | CREATE_COMPLETE | AWS::Lambda::Function | MyFunction';
-    const events = extractCloudFormationEvents(logMessage);
-    assert.strictEqual(events.length, 2);
-    assert.strictEqual(
-      events[0],
-      '10:15:30 AM | CREATE_IN_PROGRESS | AWS::Lambda::Function | MyFunction',
-    );
-    assert.strictEqual(
-      events[1],
-      '10:16:00 AM | CREATE_COMPLETE | AWS::Lambda::Function | MyFunction',
-    );
-  });
-
-  void it('returns empty array when no events are found', () => {
-    const logMessage = 'Regular log message without CloudFormation events';
-    const events = extractCloudFormationEvents(logMessage);
-    assert.strictEqual(events.length, 0);
-  });
-
-  void it('handles events with PM time format', () => {
-    const logMessage =
-      '2:15:30 PM | CREATE_IN_PROGRESS | AWS::Lambda::Function | MyFunction';
-    const events = extractCloudFormationEvents(logMessage);
-    assert.strictEqual(events.length, 1);
-    assert.strictEqual(
-      events[0],
-      '2:15:30 PM | CREATE_IN_PROGRESS | AWS::Lambda::Function | MyFunction',
     );
   });
 });

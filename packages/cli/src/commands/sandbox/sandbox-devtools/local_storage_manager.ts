@@ -520,6 +520,20 @@ export class LocalStorageManager {
   }
 
   /**
+   * Clears all CloudFormation events
+   */
+  clearCloudFormationEvents(): void {
+    try {
+      this.saveCloudFormationEvents([]);
+    } catch (error) {
+      printer.log(
+        `Error clearing CloudFormation events: ${String(error)}`,
+        LogLevel.ERROR,
+      );
+    }
+  }
+
+  /**
    * Clears all stored data
    */
   clearAll(): void {

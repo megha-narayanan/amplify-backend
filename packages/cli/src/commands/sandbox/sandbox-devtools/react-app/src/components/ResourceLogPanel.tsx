@@ -47,8 +47,36 @@ const ResourceLogPanel: React.FC<ResourceLogPanelProps> = ({
 
   const isLambdaFunction = resourceType === 'AWS::Lambda::Function';
 
+  const formatLambdaOutput = (output: string): string => {
+    try {
+      const parsed = JSON.parse(output);
+      
+      if (parsed.errorType) {
+        return `Lambda Error: ${parsed.errorType}
+Message: ${parsed.errorMessage}
+Stack Trace:
+${parsed.trace?.map((line: string, index: number) => 
+  `  ${index + 1}. ${line}`
+).join('\n') || 'No stack trace available'}`;
+      }
+      
+      if (parsed.statusCode) {
+        return `Lambda Response (Status code: ${parsed.statusCode}):
+${JSON.stringify(parsed.body, null, 2)}`;
+      }
+      
+      return JSON.stringify(parsed, null, 2);
+    } catch {
+      return output;
+    }
+  };
+
   useEffect(() => {
     if (!socket) return;
+
+    //Clear logs
+    setLogs([]);
+    setTestOutput('');
 
     // Request saved logs when panel opens
     socket.emit('viewResourceLogs', { resourceId });
@@ -293,7 +321,7 @@ const ResourceLogPanel: React.FC<ResourceLogPanelProps> = ({
                 style={{
                   fontFamily: 'monospace',
                   fontSize: '14px',
-                  backgroundColor: '#f5f5f5',
+                  backgroundColor: testOutput.includes('Error') ? '#fef2f2' : '#f0fdf4',
                   padding: '10px',
                   borderRadius: '4px',
                   whiteSpace: 'pre-wrap',
@@ -304,7 +332,7 @@ const ResourceLogPanel: React.FC<ResourceLogPanelProps> = ({
               >
                 <strong>Test Output:</strong>
                 <br />
-                {testOutput}
+                {formatLambdaOutput(testOutput)}
               </div>
             )}
           </SpaceBetween>

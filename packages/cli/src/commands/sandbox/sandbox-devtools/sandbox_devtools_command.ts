@@ -30,9 +30,7 @@ import { ShutdownService } from './services/shutdown_service.js';
 import { SocketHandlerService } from './services/socket_handlers.js';
 import { ResourceService } from './services/resource_service.js';
 import {
-  cleanAnsiCodes,
-  extractCloudFormationEvents,
-  isDeploymentProgressMessage,
+  cleanAnsiCodes
 } from './logging/cloudformation_format.js';
 import { PortChecker } from '../port_checker.js';
 
@@ -219,7 +217,7 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
       if (previousState !== sandboxState) {
         printer.log(
           `Sandbox state changed from ${previousState} to ${sandboxState}, notifying all clients`,
-          LogLevel.INFO,
+          LogLevel.DEBUG,
         );
         io.emit('sandboxStatus', {
           status: sandboxState as SandboxStatus,
@@ -264,7 +262,7 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
     printer.print(
       `${EOL}DevTools server started at ${format.highlight(`http://localhost:${port}`)}`,
     );
-
+    
     // Open the browser
     const open = (await import('open')).default;
     await open(`http://localhost:${port}`);
@@ -307,10 +305,7 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
         finalMessage = finalMessage.replace(timeRegex, '');
       }
 
-      // Check if this is a deployment progress message
-      if (isDeploymentProgressMessage(cleanMessage)) {
-        handleDeploymentProgressMessage(cleanMessage);
-      } else {
+      
         // Skip DEBUG level messages from being sent to client
         if (currentLogLevel === LogLevel.DEBUG) {
           processingMessage = false;
@@ -323,59 +318,10 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
           message: finalMessage,
         };
         io.emit('log', logData);
-      }
 
       processingMessage = false;
     };
 
-    // Function to handle deployment progress messages
-    const handleDeploymentProgressMessage = (message: string) => {
-      // Clean the message
-      const cleanMessage = cleanAnsiCodes(message);
-
-      // Extract CloudFormation events if present
-      const cfnEvents = extractCloudFormationEvents(cleanMessage);
-
-      if (cfnEvents.length > 0) {
-        // Process each CloudFormation event
-        cfnEvents.forEach((event) => {
-          // Create event object
-          const eventObj: DeploymentEventData = {
-            message: event,
-            timestamp: new Date().toISOString(),
-            eventType: 'DEPLOYMENT_PROGRESS',
-          };
-
-          // Store the event in the local storage
-          storageManager.appendDeploymentProgressEvent(eventObj);
-
-          // Emit the deployment progress event with the actual CloudFormation event
-          io.emit('deploymentInProgress', eventObj);
-        });
-      } else if (
-        cleanMessage.includes('_IN_PROGRESS') ||
-        cleanMessage.includes('CREATE_') ||
-        cleanMessage.includes('DELETE_') ||
-        cleanMessage.includes('UPDATE_') ||
-        cleanMessage.includes('COMPLETE') ||
-        cleanMessage.includes('FAILED')
-      ) {
-        // This is a deployment status message but not in the standard format
-
-        // Create event object
-        const eventObj: DeploymentEventData = {
-          message: cleanMessage,
-          timestamp: new Date().toISOString(),
-          eventType: 'DEPLOYMENT_PROGRESS',
-        };
-
-        // Store the event in the local storage
-        storageManager.appendDeploymentProgressEvent(eventObj);
-
-        // Emit the deployment progress event
-        io.emit('deploymentInProgress', eventObj);
-      }
-    };
 
     // Listen for resource configuration changes
     sandbox.on('resourceConfigChanged', (data) => {
@@ -457,13 +403,14 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
 
         // Get the current sandbox state
         const currentState = await getSandboxState();
+        sandboxState = currentState; 
 
         // Emit sandbox status update with deletion failure information
         const statusData: SandboxStatusData = {
           status: currentState as SandboxStatus,
           identifier: backendId.name,
           error: true,
-          message: `Deletion failed: ${error}`,
+          message: `Deletion failed: ${String(error)}`,
           timestamp: new Date().toISOString(),
           deploymentCompleted: true,
         };
@@ -483,19 +430,27 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
 
         // Get the current sandbox state
         const currentState = await getSandboxState();
-
+        sandboxState = currentState;
+        
         // Emit sandbox status update with deployment failure information
         const statusData: SandboxStatusData = {
           status: currentState as SandboxStatus,
           identifier: backendId.name,
           error: true,
-          message: `Deployment failed: ${error}`,
+          message: `Deployment failed: ${String(error)}`,
           timestamp: new Date().toISOString(),
           deploymentCompleted: true,
         };
 
         // Emit to all connected clients
         io.emit('sandboxStatus', statusData);
+        
+        // Emit deployment error event for enhanced error handling in UI
+        io.emit('deploymentError', {
+          error: String(error),
+          timestamp: new Date().toISOString(),
+          recoverable: true
+        });
 
         printer.log(
           `Emitted status '${currentState}' and deployment failure info`,
@@ -526,24 +481,6 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
       });
     });
 
-    // Listen for CloudFormation deployment progress events from the AmplifyIOHost
-    io.on('amplifyCloudFormationProgressUpdate', (data) => {
-      // Extract CloudFormation events from the message
-      const cfnEvents = extractCloudFormationEvents(data.message);
-
-      // Send each event to the client
-      cfnEvents.forEach((event) => {
-        if (!event) {
-          return;
-        }
-        const eventData: DeploymentEventData = {
-          message: event,
-          timestamp: new Date().toISOString(),
-          eventType: 'DEPLOYMENT_PROGRESS',
-        };
-        io.emit('deploymentInProgress', eventData);
-      });
-    });
 
     // Handle socket connections
     io.on('connection', async (socket) => {
@@ -556,9 +493,6 @@ export class SandboxDevToolsCommand implements CommandModule<object> {
 
       // Set up all socket event handlers
       socketHandlerService.setupSocketHandlers(socket);
-
-      // No longer automatically send status here
-      // The client will explicitly request it with getSandboxStatus
     });
 
     // Keep the process running until Ctrl+C
