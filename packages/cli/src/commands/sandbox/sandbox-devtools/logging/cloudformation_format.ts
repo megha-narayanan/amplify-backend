@@ -147,7 +147,7 @@ export class CloudFormationEventsService {
   async getStackEvents(backendId: BackendIdentifier, sinceTimestamp?: Date): Promise<CloudFormationEventDetails[]> {
     try {
       const stackName = BackendIdentifierConversions.toStackName(backendId);
-      printer.log(`[DEBUG] Fetching CloudFormation events for stack: ${stackName}`, LogLevel.DEBUG);
+      printer.log(`Fetching CloudFormation events for stack: ${stackName}`, LogLevel.DEBUG);
       
       // Log the API call parameters
       

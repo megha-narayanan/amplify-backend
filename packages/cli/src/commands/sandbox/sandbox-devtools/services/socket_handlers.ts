@@ -603,8 +603,8 @@ export class SocketHandlerService {
   private async handleGetSandboxStatus(socket: Socket): Promise<void> {
     try {
       printer.log(
-        'Received getSandboxStatus request from client',
-        LogLevel.INFO,
+        `Received getSandboxStatus request from client`,
+        LogLevel.DEBUG,
       );
       const status = await this.getSandboxState();
 
@@ -720,8 +720,6 @@ export class SocketHandlerService {
         },
       };
 
-      // Actually start the sandbox
-      // The sandbox will emit events that update the UI status
       await this.sandbox.start(sandboxOptions);
 
       printer.log('Sandbox start command issued successfully', LogLevel.DEBUG);
@@ -738,8 +736,6 @@ export class SocketHandlerService {
     try {
       printer.log('Stopping sandbox...', LogLevel.INFO);
 
-      // Stop the sandbox
-      // The sandbox will emit events that update the UI status
       await this.sandbox.stop(); 
       
       printer.log('Sandbox stop command issued successfully', LogLevel.DEBUG);
@@ -765,8 +761,6 @@ export class SocketHandlerService {
     try {
       printer.log('Deleting sandbox...', LogLevel.INFO);
 
-      // Delete the sandbox
-      // The sandbox will emit events that update the UI status
       await this.sandbox.delete({ identifier: this.backendId.name });
 
       printer.log('Sandbox delete command issued successfully', LogLevel.DEBUG);
@@ -859,7 +853,7 @@ export class SocketHandlerService {
     const sandboxState = this.sandbox.getState();
     
     // Don't fetch events if sandbox doesn't exist
-    if (sandboxState === 'nonexistent') {
+    if (sandboxState === 'nonexistent' || sandboxState === 'unknown') {
       return;
     }
     

@@ -45,7 +45,8 @@ export type SandboxEvents =
   | 'successfulDeletion'
   | 'failedDeletion'
   | 'successfulStop'
-  | 'failedStop';
+  | 'failedStop'
+  | 'initializationError';
 
 export type SandboxOptions = {
   dir?: string;

@@ -20,7 +20,9 @@ interface DeploymentProgressProps {
 
 interface ErrorState {
   hasError: boolean;
+  name: string;
   message: string;
+  resolution?: string;
   timestamp: string;
 }
 
@@ -54,6 +56,7 @@ const DeploymentProgress: React.FC<DeploymentProgressProps> = ({
   const containerRef = useRef<HTMLDivElement>(null);
   const [errorState, setErrorState] = useState<ErrorState>({
     hasError: false,
+    name: '',
     message: '',
     timestamp: ''
   });
@@ -131,12 +134,19 @@ const DeploymentProgress: React.FC<DeploymentProgressProps> = ({
   useEffect(() => {
     if (!socket) return;
 
-    const handleDeploymentError = (error: { error: string; timestamp: string }) => {
-      setErrorState({
-        hasError: true,
-        message: error.error,
-        timestamp: error.timestamp
-      });
+  const handleDeploymentError = (error: { 
+    name: string;
+    message: string;
+    resolution?: string;
+    timestamp: string;
+  }) => {
+    setErrorState({
+      hasError: true,
+      name: error.name,
+      message: error.message,
+      resolution: error.resolution,
+      timestamp: error.timestamp
+    });
     };
 
     socket.on('deploymentError', handleDeploymentError);
@@ -173,10 +183,10 @@ const DeploymentProgress: React.FC<DeploymentProgressProps> = ({
     
     // Handle CloudFormation events from the API
     const handleCloudFormationEvents = (cfnEvents: DeploymentEvent[]) => {
-      console.log(`[DEBUG] Received ${cfnEvents.length} CloudFormation events, current status: ${status}`);
+      console.log(`Received ${cfnEvents.length} CloudFormation events, current status: ${status}`);
       
       if (cfnEvents.length === 0) {
-        console.log('[DEBUG] No CloudFormation events received, returning early');
+        console.log('No CloudFormation events received, returning early');
         return;
       }
       
@@ -187,7 +197,7 @@ const DeploymentProgress: React.FC<DeploymentProgressProps> = ({
           const eventTime = new Date(event.timestamp);
           return eventTime >= deploymentStartTime;
         });
-        console.log(`[DEBUG] Filtered events from ${cfnEvents.length} to ${filteredEvents.length} (since deployment start)`);
+        console.log(`Filtered events from ${cfnEvents.length} to ${filteredEvents.length} (since deployment start)`);
       }
       
       // Merge with existing events and deduplicate
@@ -208,7 +218,7 @@ const DeploymentProgress: React.FC<DeploymentProgressProps> = ({
     
     // Handle CloudFormation events error
     const handleCloudFormationEventsError = (error: { error: string }) => {
-      console.error('[DEBUG] Error fetching CloudFormation events:', error.error);
+      console.error('Error fetching CloudFormation events:', error.error);
     };
 
     socket.on('cloudFormationEvents', handleCloudFormationEvents);
@@ -317,16 +327,26 @@ const DeploymentProgress: React.FC<DeploymentProgressProps> = ({
         </Header>
       }
     >
-      {errorState.hasError && (
-        <Alert
-          type="error"
-          header="Deployment Failed"
-          dismissible
-          onDismiss={() => setErrorState({ hasError: false, message: '', timestamp: '' })}
-        >
-          {errorState.message}
-        </Alert>
+{errorState.hasError && (
+  <Alert
+    type="error"
+    header={errorState.name || "Error"}
+    dismissible
+    onDismiss={() => setErrorState({ hasError: false, name: '', message: '', timestamp: '' })}
+  >
+    <div>
+      <div style={{ marginBottom: '10px' }}>
+        {errorState.message}
+      </div>
+      
+      {errorState.resolution && (
+        <div style={{ marginTop: '10px' }}>
+          <strong>Resolution:</strong> {errorState.resolution}
+        </div>
       )}
+    </div>
+  </Alert>
+)}
       
       <ExpandableSection
         headerText={
